@@ -8,21 +8,18 @@ echo ""
 
 # Download full setup script from GitHub
 SETUP_URL="https://raw.githubusercontent.com/drjhoover/hsparc-releases/main/setup-hsparc.sh"
+TEMP_SCRIPT="/tmp/setup-hsparc-$$.sh"
 
 echo "Downloading setup script..."
-wget -q "$SETUP_URL" -O /tmp/setup-hsparc.sh
-
-if [ ! -f /tmp/setup-hsparc.sh ]; then
+if ! curl -fsSL "$SETUP_URL" -o "$TEMP_SCRIPT"; then
     echo "Error: Failed to download setup script"
     exit 1
 fi
 
-chmod +x /tmp/setup-hsparc.sh
+chmod +x "$TEMP_SCRIPT"
 
 echo "Launching installer..."
 echo ""
 
-# Run with stdin redirected from terminal
-/tmp/setup-hsparc.sh < /dev/tty
-
-rm -f /tmp/setup-hsparc.sh
+# Execute the script directly (not piped, so stdin works)
+exec "$TEMP_SCRIPT"
