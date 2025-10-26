@@ -20,7 +20,7 @@ echo_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 APP_DIR="/opt/hsparc"
 VERSION_FILE="$APP_DIR/version.json"
 BACKUP_DIR="/var/backups/hsparc"
-GIT_REPO="https://bitbucket.org/drjhoover/hsparc.git"  # UPDATE THIS
+GIT_REPO="https://github.com/drjhoover/hsparc-releases.git"
 GIT_BRANCH="main"
 
 CHECK_ONLY=false

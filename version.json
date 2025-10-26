@@ -26,6 +26,6 @@
       ]
     }
   ],
-  "repository": "https://bitbucket.org/drjhoover/hsparc",
-  "update_url": "https://bitbucket.org/drjhoover/hsparc/raw/main/releases/"
+  "repository": "https://github.com/drjhoover/hsparc-releases",
+  "update_url": "https://github.com/drjhoover/hsparc-releases/releases/download/"
 }
