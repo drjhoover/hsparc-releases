@@ -276,7 +276,6 @@ install_application() {
     mkdir -p "$APP_DIR"
     
     if [ "$source_method" = "download" ]; then
-    if [ "$source_method" = "download" ]; then
         # Download latest release from GitHub
         echo_info "Downloading latest release..."
         
@@ -295,9 +294,6 @@ install_application() {
         # Extract to APP_DIR
         echo_info "Extracting..."
         tar -xzf hsparc.tar.gz -C "$APP_DIR"
-        
-        rm -rf "$temp_dir"
-        
         
         rm -rf "$temp_dir"
         
@@ -321,39 +317,21 @@ install_application() {
     chmod +x "$APP_DIR/hsparc"
     
     # Create wrapper script for main.py compatibility
-    cat > "$APP_DIR/main.py" << 'EOF'
+    cat > "$APP_DIR/main.py" << 'INNEREOF'
 #!/usr/bin/env python3
 """HSPARC wrapper - launches compiled binary"""
 import os
 import sys
-
 binary_path = os.path.join(os.path.dirname(__file__), 'hsparc')
 os.execv(binary_path, [binary_path] + sys.argv[1:])
-EOF
+INNEREOF
     chmod +x "$APP_DIR/main.py"
     
-    # Verify installation
-    if [ ! -f "$APP_DIR/hsparc" ]; then
-        echo_error "Installation failed - binary not found"
-        return 1
-    fi
+    # Set ownership
+    chown -R hsparc:hsparc "$APP_DIR"
     
     echo_info "Application installed ✓"
-    
-    # Show version
-    local version=$(get_installed_version)
-    echo_info "Installed version: ${version}"
 }
-
-# Create kiosk launch script
-create_kiosk_launcher() {
-    echo_step "Creating kiosk launcher..."
-    
-    mkdir -p "$KIOSK_HOME/.local/bin"
-    
-    cat > "$KIOSK_HOME/.local/bin/hsparc-kiosk-start.sh" << 'SCRIPT_EOF'
-#!/usr/bin/env bash
-set -euo pipefail
 
 LOG="/tmp/hsparc-kiosk-$(date +%Y%m%d-%H%M%S).log"
 : "${DISPLAY:=:0}"
@@ -555,36 +533,6 @@ reinstall_app() {
     echo_info "=========================================="
     echo_info "   REINSTALL APPLICATION"
     echo_info "=========================================="
-    echo ""
-    
-    if ! is_installed; then
-        echo_error "HSPARC is not installed. Use full installation instead."
-        return 1
-    fi
-    
-    local current_version=$(get_installed_version)
-    echo_info "Current version: ${current_version}"
-    echo ""
-    echo_warn "This will:"
-    echo "  âœ" Reinstall HSPARC application"
-    echo "  âœ" Preserve all user data (database, configs)"
-    echo "  âœ" Keep user and system configuration"
-    echo ""
-    echo_prompt "Continue? (y/n)"
-    read -r confirm
-    [[ ! "$confirm" =~ ^[Yy]$ ]] && return 0
-    
-    # Create backup
-    backup_data "pre-reinstall-$(date +%Y%m%d-%H%M%S)"
-    
-    # Ask for installation source
-    echo ""
-    echo_prompt "Installation source:"
-    echo "  1) Download latest from BitBucket"
-    echo "  2) Install from local archive/directory"
-    echo -n "Select (1-2): "
-    read -r source_choice
-    
     case $source_choice in
         1)
             install_application "download" ""
@@ -712,7 +660,7 @@ uninstall_app() {
     if [[ "$remove_data" =~ ^[Yy]$ ]]; then
         echo_warn "  âœ— User data (CANNOT BE RECOVERED!)"
     else
-        echo_info "  âœ" User data will be preserved"
+        echo_info "  ✓ User data will be preserved"
     fi
     
     echo ""
@@ -722,7 +670,7 @@ uninstall_app() {
     if [[ "$remove_user" =~ ^[Yy]$ ]]; then
         echo_warn "  âœ— User account 'hsparc'"
     else
-        echo_info "  âœ" User account will be preserved"
+        echo_info "  ✓ User account will be preserved"
     fi
     
     echo ""
