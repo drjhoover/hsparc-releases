@@ -22,6 +22,7 @@ chmod +x /tmp/setup-hsparc.sh
 echo "Launching installer..."
 echo ""
 
-/tmp/setup-hsparc.sh
+# Run with stdin redirected from terminal
+/tmp/setup-hsparc.sh < /dev/tty
 
 rm -f /tmp/setup-hsparc.sh
