@@ -276,24 +276,27 @@ install_application() {
     mkdir -p "$APP_DIR"
     
     if [ "$source_method" = "download" ]; then
-        # Download latest release
+    if [ "$source_method" = "download" ]; then
+        # Download latest release from GitHub
         echo_info "Downloading latest release..."
         
-        # Clone repository
         local temp_dir=$(mktemp -d)
-        git clone --depth 1 --branch "$GIT_BRANCH" "$GIT_REPO" "$temp_dir"
+        local release_url="https://github.com/drjhoover/hsparc-releases/releases/download/1.0/hsparc-1.0.0-linux-x64.tar.gz"
         
-        # Check for pre-built binary
-        if [ -f "${temp_dir}/dist/hsparc" ]; then
-            echo_info "Using pre-built binary"
-            cp "${temp_dir}/dist/hsparc" "$APP_DIR/"
-            cp -r "${temp_dir}/dist/"* "$APP_DIR/" 2>/dev/null || true
-        else
-            echo_error "No pre-built binary found!"
-            echo_error "Please build the application first using build.sh"
+        cd "$temp_dir"
+        wget -q --show-progress "$release_url" -O hsparc.tar.gz
+        
+        if [ ! -f hsparc.tar.gz ]; then
+            echo_error "Failed to download release"
             rm -rf "$temp_dir"
             return 1
         fi
+        
+        # Extract to APP_DIR
+        echo_info "Extracting..."
+        tar -xzf hsparc.tar.gz -C "$APP_DIR"
+        
+        rm -rf "$temp_dir"
         
         rm -rf "$temp_dir"
         
