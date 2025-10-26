@@ -297,7 +297,7 @@ install_application() {
         tar -xzf hsparc.tar.gz -C "$APP_DIR"
         
         rm -rf "$temp_dir"
-
+        
         
         rm -rf "$temp_dir"
         
