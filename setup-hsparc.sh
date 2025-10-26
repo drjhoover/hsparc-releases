@@ -137,7 +137,7 @@ install_application() {
         local release_url="https://github.com/drjhoover/hsparc-releases/releases/download/1.0/hsparc-1.0.0-linux-x64.tar.gz"
         
         cd "$temp_dir"
-        wget -q --show-progress "$release_url" -O hsparc.tar.gz
+        wget -L -q --show-progress "$release_url" -O hsparc.tar.gz
         
         if [ ! -f hsparc.tar.gz ]; then
             echo_error "Failed to download release"
