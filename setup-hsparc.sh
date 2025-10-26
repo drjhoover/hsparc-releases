@@ -242,6 +242,7 @@ SCRIPT_EOF
 }
 
 configure_autologin() {
+    disable_power_management
     echo_step "Configuring GDM auto-login..."
     
     local GDM_CONF="/etc/gdm3/custom.conf"
@@ -269,6 +270,28 @@ X-GNOME-Autostart-enabled=true
 EOF
     
     chown -R ${KIOSK_USER}:${KIOSK_USER} "${KIOSK_HOME}/.config"
+}
+
+disable_power_management() {
+    echo_step "Disabling power management for kiosk..."
+    
+    # Prevent system suspend/hibernate
+    systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target 2>/dev/null || true
+    
+    # Configure logind to ignore power events
+    if ! grep -q "HSPARC Kiosk" /etc/systemd/logind.conf; then
+        cat >> /etc/systemd/logind.conf << 'LOGIND_EOF'
+
+# HSPARC Kiosk - Disable all power management
+HandleLidSwitch=ignore
+HandleLidSwitchExternalPower=ignore
+IdleAction=ignore
+LOGIND_EOF
+        
+        systemctl restart systemd-logind.service 2>/dev/null || true
+    fi
+    
+    echo_info "Power management disabled ✓"
 }
 
 full_install() {
@@ -305,6 +328,7 @@ full_install() {
     
     create_kiosk_launcher
     configure_autologin
+    disable_power_management
     
     echo ""
     echo_info "=========================================="
