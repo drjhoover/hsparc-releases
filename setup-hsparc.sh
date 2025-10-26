@@ -75,7 +75,7 @@ backup_data() {
 install_dependencies() {
     echo_step "Installing system dependencies..."
     
-    local packages="icewm unclutter xdotool x11-xserver-utils pavucontrol pulseaudio python3 python3-pip python3-dev gcc g++ git"
+    local packages="icewm unclutter xdotool x11-xserver-utils pavucontrol pulseaudio python3 python3-pip python3-dev gcc g++ git libxcb-cursor0 libxcb-cursor-dev libxcb-xinerama0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0"
     
     echo_info "Installing: ${packages}"
     apt-get update -qq
@@ -104,16 +104,39 @@ configure_icewm() {
     
     mkdir -p "${KIOSK_HOME}/.icewm"
     
-    cat > "${KIOSK_HOME}/.icewm/preferences" << 'EOF'
+    cat > "${KIOSK_HOME}/.icewm/preferences" << 'ICEWM_EOF'
 DesktopBackgroundColor="rgb:00/00/00"
 TaskBarAutoHide=1
 TaskBarShowWorkspaces=0
 TaskBarShowAllWindows=0
 TaskBarShowClock=0
 ShowTaskBar=0
-EOF
+
+# Keyboard lockdown - disable system shortcuts
+KeySysWinMenu=""
+KeySysMenu=""
+KeySysWindowList=""
+KeySysDialog=""
+ICEWM_EOF
     
+    # Create startup script
+    cat > "${KIOSK_HOME}/.icewm/startup" << 'STARTUP_EOF'
+#!/bin/bash
+
+# Wait for X server
+sleep 3
+
+# Disable screen blanking
+xset s off -dpms s noblank
+
+# Launch HSPARC in kiosk mode
+export HSPARC_KIOSK=1
+/home/hsparc/.local/bin/hsparc-kiosk-start.sh &
+STARTUP_EOF
+    
+    chmod +x "${KIOSK_HOME}/.icewm/startup"
     chown -R ${KIOSK_USER}:${KIOSK_USER} "${KIOSK_HOME}/.icewm"
+    
     echo_info "IceWM configured ✓"
 }
 
