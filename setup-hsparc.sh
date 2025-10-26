@@ -542,36 +542,6 @@ full_install() {
     echo ""
     echo_info "To disable kiosk mode:"
     echo_info "  Remove auto-login from /etc/gdm3/custom.conf"
-    echo ""
-}
-
-# OPERATION 2: Reinstall App Only
-reinstall_app() {
-    echo ""
-    echo_info "=========================================="
-    echo_info "   REINSTALL APPLICATION"
-    echo_info "=========================================="
-    echo ""
-    
-    if ! is_installed; then
-        echo_error "HSPARC is not installed. Use full installation instead."
-        return 1
-    fi
-    
-    local current_version=$(get_installed_version)
-    echo_info "Current version: ${current_version}"
-    echo ""
-    echo_warn "This will:"
-    echo "  âœ" Reinstall HSPARC application"
-    echo "  âœ" Preserve all user data (database, configs)"
-    echo "  âœ" Keep user and system configuration"
-    echo ""
-    echo_prompt "Continue? (y/n)"
-    read -r confirm
-    [[ ! "$confirm" =~ ^[Yy]$ ]] && return 0
-    
-    # Create backup
-    backup_data "pre-reinstall-$(date +%Y%m%d-%H%M%S)"
     
     # Ask for installation source
     echo ""
@@ -708,7 +678,7 @@ uninstall_app() {
     if [[ "$remove_data" =~ ^[Yy]$ ]]; then
         echo_warn "  âœ— User data (CANNOT BE RECOVERED!)"
     else
-        echo_info "  âœ" User data will be preserved"
+        echo_info "  ✓ User data will be preserved"
     fi
     
     echo ""
@@ -718,7 +688,7 @@ uninstall_app() {
     if [[ "$remove_user" =~ ^[Yy]$ ]]; then
         echo_warn "  âœ— User account 'hsparc'"
     else
-        echo_info "  âœ" User account will be preserved"
+        echo_info "  ✓ User account will be preserved"
     fi
     
     echo ""
