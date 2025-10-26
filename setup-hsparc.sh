@@ -29,7 +29,7 @@ CONFIG_FILE="$DATA_DIR/global_av.json"
 VERSION_FILE="$APP_DIR/version.json"
 
 # Git configuration
-GIT_REPO="https://github.org/drjhoover/hsparc.git"  # UPDATE THIS
+GIT_REPO="https://github.com/drjhoover/hsparc.git"  # UPDATE THIS
 GIT_BRANCH="main"
 
 # Check root
