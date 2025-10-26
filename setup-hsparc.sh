@@ -261,77 +261,14 @@ EOF
 }
 
 # Install application
-install_application() {
-    local source_method="$1"  # "download" or "local"
-    local source_path="$2"
+create_kiosk_launcher() {
+    echo_step "Creating kiosk launcher..."
     
-    echo_step "Installing HSPARC application..."
+    mkdir -p "$KIOSK_HOME/.local/bin"
     
-    # Remove old installation if exists
-    if [ -d "$APP_DIR" ]; then
-        echo_info "Removing old installation..."
-        rm -rf "$APP_DIR"
-    fi
-    
-    mkdir -p "$APP_DIR"
-    
-    if [ "$source_method" = "download" ]; then
-        # Download latest release from GitHub
-        echo_info "Downloading latest release..."
-        
-        local temp_dir=$(mktemp -d)
-        local release_url="https://github.com/drjhoover/hsparc-releases/releases/download/1.0/hsparc-1.0.0-linux-x64.tar.gz"
-        
-        cd "$temp_dir"
-        wget -q --show-progress "$release_url" -O hsparc.tar.gz
-        
-        if [ ! -f hsparc.tar.gz ]; then
-            echo_error "Failed to download release"
-            rm -rf "$temp_dir"
-            return 1
-        fi
-        
-        # Extract to APP_DIR
-        echo_info "Extracting..."
-        tar -xzf hsparc.tar.gz -C "$APP_DIR"
-        
-        rm -rf "$temp_dir"
-        
-    elif [ "$source_method" = "local" ]; then
-        # Install from local archive
-        echo_info "Installing from: ${source_path}"
-        
-        if [[ "$source_path" =~ \.tar\.gz$ ]]; then
-            # Extract archive
-            tar -xzf "$source_path" -C "$APP_DIR" --strip-components=1
-        elif [ -d "$source_path" ]; then
-            # Copy directory
-            cp -r "$source_path/"* "$APP_DIR/"
-        else
-            echo_error "Invalid source path: $source_path"
-            return 1
-        fi
-    fi
-    
-    # Make binary executable
-    chmod +x "$APP_DIR/hsparc"
-    
-    # Create wrapper script for main.py compatibility
-    cat > "$APP_DIR/main.py" << 'INNEREOF'
-#!/usr/bin/env python3
-"""HSPARC wrapper - launches compiled binary"""
-import os
-import sys
-binary_path = os.path.join(os.path.dirname(__file__), 'hsparc')
-os.execv(binary_path, [binary_path] + sys.argv[1:])
-INNEREOF
-    chmod +x "$APP_DIR/main.py"
-    
-    # Set ownership
-    chown -R hsparc:hsparc "$APP_DIR"
-    
-    echo_info "Application installed ✓"
-}
+    cat > "$KIOSK_HOME/.local/bin/hsparc-kiosk-start.sh" << 'SCRIPT_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
 
 LOG="/tmp/hsparc-kiosk-$(date +%Y%m%d-%H%M%S).log"
 : "${DISPLAY:=:0}"
