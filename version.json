@@ -1,0 +1,31 @@
+{
+  "version": "1.0.0",
+  "codename": "Night Sky",
+  "major": 1,
+  "minor": 0,
+  "patch": 0,
+  "release_date": "2025-01-24",
+  "min_python": "3.10",
+  "min_ubuntu": "22.04",
+  "changelog": [
+    {
+      "version": "1.0.0",
+      "date": "2025-01-24",
+      "changes": [
+        "Initial production release",
+        "Three operational modes: Recorder, Observer, Researcher",
+        "PIN-protected case security with SHA-256",
+        "Encrypted case export/import (AES-256-GCM)",
+        "Multi-controller support with participant assignment",
+        "Timeline visualization with construct mapping",
+        "Data export to XLSX, CSV, SPSS formats",
+        "Kiosk mode with auto-login and auto-launch",
+        "Recognition check system for observer sessions",
+        "Global A/V device management",
+        "Convergence/divergence analysis with statistical testing"
+      ]
+    }
+  ],
+  "repository": "https://bitbucket.org/drjhoover/hsparc",
+  "update_url": "https://bitbucket.org/drjhoover/hsparc/raw/main/releases/"
+}
