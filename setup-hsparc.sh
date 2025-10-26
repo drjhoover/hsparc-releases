@@ -29,7 +29,7 @@ CONFIG_FILE="$DATA_DIR/global_av.json"
 VERSION_FILE="$APP_DIR/version.json"
 
 # Git configuration
-GIT_REPO="https://github.com/drjhoover/hsparc-releases.git"
+GIT_REPO="https://github.com/drjhoover/hsparc-releases.git"  # UPDATE THIS
 GIT_BRANCH="main"
 
 # Check root
@@ -501,7 +501,7 @@ full_install() {
     # Ask for installation source
     echo ""
     echo_prompt "Installation source:"
-    echo "  1) Download latest from BitBucket"
+    echo "  1) Download latest from GitHub"
     echo "  2) Install from local archive/directory"
     echo -n "Select (1-2): "
     read -r source_choice
@@ -576,7 +576,7 @@ reinstall_app() {
     # Ask for installation source
     echo ""
     echo_prompt "Installation source:"
-    echo "  1) Download latest from BitBucket"
+    echo "  1) Download latest from GitHub"
     echo "  2) Install from local archive/directory"
     echo -n "Select (1-2): "
     read -r source_choice
