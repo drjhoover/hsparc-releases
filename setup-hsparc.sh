@@ -75,7 +75,7 @@ backup_data() {
 install_dependencies() {
     echo_step "Installing system dependencies..."
     
-    local packages="icewm unclutter xdotool x11-xserver-utils pavucontrol pulseaudio python3 python3-pip python3-dev gcc g++ git libxcb-cursor0 libxcb-cursor-dev libxcb-xinerama0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0"
+    local packages="icewm feh unclutter xdotool x11-xserver-utils pavucontrol pulseaudio python3 python3-pip python3-dev gcc g++ git libxcb-cursor0 libxcb-cursor-dev libxcb-xinerama0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0"
     
     echo_info "Installing: ${packages}"
     apt-get update -qq
@@ -119,6 +119,14 @@ KeySysWindowList=""
 KeySysDialog=""
 ICEWM_EOF
     
+    # Create prefoverride to override theme background
+    cat > "${KIOSK_HOME}/.icewm/prefoverride" << 'PREFOVER_EOF'
+# Override theme background with HSPARC splash
+DesktopBackgroundImage="/opt/hsparc/resources/hsparc_background.jpg"
+DesktopBackgroundScaled=1
+DesktopBackgroundCenter=0
+PREFOVER_EOF
+    
     # Create startup script
     cat > "${KIOSK_HOME}/.icewm/startup" << 'STARTUP_EOF'
 #!/bin/bash
@@ -126,12 +134,32 @@ ICEWM_EOF
 # Wait for X server
 sleep 3
 
+# Set desktop background with feh
+if [ -f /opt/hsparc/resources/hsparc_background.jpg ]; then
+    feh --bg-fill /opt/hsparc/resources/hsparc_background.jpg
+fi
+
+# Restart icewmbg to apply settings
+killall icewmbg 2>/dev/null
+icewmbg -r &
+
+# Show fullscreen splash
+if [ -f /opt/hsparc/resources/hsparc_background.jpg ]; then
+    feh --fullscreen --hide-pointer --no-menus \
+        /opt/hsparc/resources/hsparc_background.jpg &
+    SPLASH_PID=$!
+fi
+
 # Disable screen blanking
 xset s off -dpms s noblank
 
 # Launch HSPARC in kiosk mode
 export HSPARC_KIOSK=1
 /home/hsparc/.local/bin/hsparc-kiosk-start.sh &
+
+# Kill splash after app starts
+sleep 5
+kill $SPLASH_PID 2>/dev/null
 STARTUP_EOF
     
     chmod +x "${KIOSK_HOME}/.icewm/startup"
@@ -243,6 +271,7 @@ SCRIPT_EOF
 
 configure_autologin() {
     disable_power_management
+    configure_sudo_privileges
     echo_step "Configuring GDM auto-login..."
     
     local GDM_CONF="/etc/gdm3/custom.conf"
@@ -273,6 +302,7 @@ EOF
 }
 
 disable_power_management() {
+    configure_sudo_privileges
     echo_step "Disabling power management for kiosk..."
     
     # Prevent system suspend/hibernate
@@ -292,6 +322,19 @@ LOGIND_EOF
     fi
     
     echo_info "Power management disabled ✓"
+}
+
+configure_sudo_privileges() {
+    echo_step "Configuring sudo privileges for shutdown/reboot..."
+    
+    cat > /etc/sudoers.d/hsparc-shutdown << 'SUDO_EOF'
+# Allow hsparc user to shutdown/reboot without password
+hsparc ALL=(ALL) NOPASSWD: /sbin/shutdown, /sbin/reboot, /sbin/poweroff
+SUDO_EOF
+    
+    chmod 0440 /etc/sudoers.d/hsparc-shutdown
+    
+    echo_info "Sudo privileges configured ✓"
 }
 
 full_install() {
@@ -329,6 +372,7 @@ full_install() {
     create_kiosk_launcher
     configure_autologin
     disable_power_management
+    configure_sudo_privileges
     
     echo ""
     echo_info "=========================================="
