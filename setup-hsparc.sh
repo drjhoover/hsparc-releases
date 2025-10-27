@@ -185,7 +185,7 @@ install_application() {
         echo_info "Downloading latest release..."
         
         local temp_dir=$(mktemp -d)
-        local release_url="https://github.com/drjhoover/hsparc-releases/releases/download/1.0.1/hsparc-1.0.1-linux-x64.tar.gz"
+        local release_url="https://github.com/drjhoover/hsparc-releases/releases/download/1.0.2/hsparc-1.0.2-linux-x64.tar.gz"
         
         cd "$temp_dir"
         curl -L -o hsparc.tar.gz "$release_url"
