@@ -34,10 +34,12 @@ echo ""
 echo_step "Installing system dependencies..."
 apt-get update
 apt-get install -y \
-    python3 python3-pip python3-venv \
+    python3 python3-pip python3-venv python3-dev \
+    build-essential portaudio19-dev \
     icewm x11-xserver-utils unclutter \
     ffmpeg v4l-utils pulseaudio \
-    sqlite3 curl wget git
+    sqlite3 curl wget git \
+    libevdev2 libevdev-dev
 
 # Create user
 echo_step "Creating hsparc user..."
