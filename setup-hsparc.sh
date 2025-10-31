@@ -1,432 +1,146 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# HSPARC Setup Utility
-# Handles installation, reinstallation, updates, and uninstallation
+# HSPARC Installation Script
+# Downloads and installs HSPARC from GitHub releases
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_NAME="hsparc"
-APP_DIR="/opt/${APP_NAME}"
+VERSION="1.0.4"
+DOWNLOAD_URL="https://github.com/drjhoover/hsparc-releases/releases/download/v${VERSION}/hsparc-${VERSION}.tar.gz"
+INSTALL_DIR="/opt/hsparc"
 KIOSK_USER="hsparc"
-KIOSK_HOME="/home/${KIOSK_USER}"
-BACKUP_DIR="${KIOSK_HOME}/backups"
-GIT_REPO="https://github.com/drjhoover/hsparc-releases.git"
-GIT_BRANCH="main"
 
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-CYAN='\033[0;36m'
 NC='\033[0m'
 
 echo_info() { echo -e "${GREEN}[INFO]${NC} $*"; }
-echo_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 echo_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 echo_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
-echo_prompt() { echo -e "${CYAN}[INPUT]${NC} $*"; }
 
-show_banner() {
-    echo ""
-    echo_info "=========================================="
-    echo_info "       HSPARC Setup Utility v1.0"
-    echo_info "    Human Factors Research Application"
-    echo_info "=========================================="
-}
+# Check root
+if [ "$EUID" -ne 0 ]; then
+    echo_error "This script must be run as root (use sudo)"
+    exit 1
+fi
 
-is_installed() {
-    [ -d "$APP_DIR" ] && [ -f "$APP_DIR/hsparc" ]
-}
+echo_info "=========================================="
+echo_info "  HSPARC Installation v${VERSION}"
+echo_info "=========================================="
+echo ""
 
-get_installed_version() {
-    if [ -f "$APP_DIR/version.txt" ]; then
-        cat "$APP_DIR/version.txt"
-    else
-        echo "unknown"
-    fi
-}
+# Install system dependencies
+echo_step "Installing system dependencies..."
+apt-get update
+apt-get install -y \
+    python3 python3-pip python3-venv \
+    icewm x11-xserver-utils unclutter \
+    ffmpeg v4l-utils pulseaudio \
+    sqlite3 curl wget git
 
-backup_data() {
-    local backup_name="${1:-backup-$(date +%Y%m%d-%H%M%S)}"
-    local backup_path="${BACKUP_DIR}/${backup_name}"
-    
-    echo_step "Creating backup: ${backup_name}"
-    
-    mkdir -p "$BACKUP_DIR"
-    mkdir -p "${backup_path}"
-    
-    if [ -d "${KIOSK_HOME}/.local/share/hsparc" ]; then
-        cp -r "${KIOSK_HOME}/.local/share/hsparc" "${backup_path}/"
-        echo_info "Data backed up ✓"
-    else
-        echo_warn "No data to backup"
-    fi
-    
-    if [ -d "${KIOSK_HOME}/.config/hsparc" ]; then
-        cp -r "${KIOSK_HOME}/.config/hsparc" "${backup_path}/"
-        echo_info "Config backed up ✓"
-    fi
-    
-    echo "$(get_installed_version)" > "${backup_path}/version.txt"
-    chown -R ${KIOSK_USER}:${KIOSK_USER} "$BACKUP_DIR"
-}
+# Create user
+echo_step "Creating hsparc user..."
+if ! id "$KIOSK_USER" &>/dev/null; then
+    useradd -m -s /bin/bash "$KIOSK_USER"
+fi
+usermod -aG video,audio,input "$KIOSK_USER"
 
-install_dependencies() {
-    echo_step "Installing system dependencies..."
-    
-    local packages="icewm feh unclutter xdotool x11-xserver-utils pavucontrol pulseaudio python3 python3-pip python3-dev gcc g++ git libxcb-cursor0 libxcb-cursor-dev libxcb-xinerama0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0"
-    
-    echo_info "Installing: ${packages}"
-    apt-get update -qq
-    apt-get install -y ${packages} >/dev/null 2>&1
-    
-    echo_info "Dependencies installed ✓"
-}
+# Download release
+echo_step "Downloading HSPARC v${VERSION}..."
+mkdir -p /tmp/hsparc-install
+cd /tmp/hsparc-install
+wget -q --show-progress "$DOWNLOAD_URL" -O hsparc.tar.gz
 
-create_user() {
-    echo_step "Creating ${KIOSK_USER} user..."
-    
-    if id "$KIOSK_USER" &>/dev/null; then
-        echo_warn "User ${KIOSK_USER} already exists"
-    else
-        useradd -m -s /bin/bash "$KIOSK_USER"
-        echo_info "User created ✓"
-    fi
-    
-    echo_info "Adding user to required groups..."
-    usermod -a -G video,audio,input,plugdev "$KIOSK_USER"
-    echo_info "Groups configured ✓"
-}
+# Extract to install directory
+echo_step "Installing to ${INSTALL_DIR}..."
+mkdir -p "$INSTALL_DIR"
+tar -xzf hsparc.tar.gz -C "$INSTALL_DIR" --strip-components=1
 
-configure_icewm() {
-    echo_step "Configuring IceWM window manager..."
-    
-    mkdir -p "${KIOSK_HOME}/.icewm"
-    
-    cat > "${KIOSK_HOME}/.icewm/preferences" << 'ICEWM_EOF'
-DesktopBackgroundColor="rgb:00/00/00"
-TaskBarAutoHide=1
-TaskBarShowWorkspaces=0
-TaskBarShowAllWindows=0
-TaskBarShowClock=0
-ShowTaskBar=0
+# Install Python dependencies
+echo_step "Installing Python dependencies..."
+cd "$INSTALL_DIR"
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
 
-# Keyboard lockdown - disable system shortcuts
-KeySysWinMenu=""
-KeySysMenu=""
-KeySysWindowList=""
-KeySysDialog=""
-ICEWM_EOF
-    
-    # Create prefoverride to override theme background
-    cat > "${KIOSK_HOME}/.icewm/prefoverride" << 'PREFOVER_EOF'
-# Override theme background with HSPARC splash
-DesktopBackgroundImage="/opt/hsparc/resources/hsparc_background.jpg"
-DesktopBackgroundScaled=1
-DesktopBackgroundCenter=0
-PREFOVER_EOF
-    
-    # Create startup script
-    cat > "${KIOSK_HOME}/.icewm/startup" << 'STARTUP_EOF'
+# Set permissions
+chown -R "$KIOSK_USER:$KIOSK_USER" "$INSTALL_DIR"
+
+# Create systemd service
+echo_step "Creating systemd service..."
+cat > /etc/systemd/system/hsparc.service << 'EOFSERVICE'
+[Unit]
+Description=HSPARC Research Application
+After=graphical.target
+
+[Service]
+Type=simple
+User=hsparc
+WorkingDirectory=/opt/hsparc
+Environment="DISPLAY=:0"
+ExecStart=/opt/hsparc/venv/bin/python /opt/hsparc/main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=graphical.target
+EOFSERVICE
+
+systemctl daemon-reload
+systemctl enable hsparc
+
+# Setup IceWM kiosk
+echo_step "Configuring IceWM kiosk mode..."
+
+# Auto-login
+mkdir -p /etc/systemd/system/getty@tty1.service.d
+cat > /etc/systemd/system/getty@tty1.service.d/autologin.conf << EOFAUTOLOGIN
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin $KIOSK_USER --noclear %I \$TERM
+EOFAUTOLOGIN
+
+# .xinitrc for auto-start X and HSPARC
+cat > /home/$KIOSK_USER/.xinitrc << 'EOFXINITRC'
 #!/bin/bash
-
-# Wait for X server
-sleep 3
-
-# Set desktop background with feh
-if [ -f /opt/hsparc/resources/hsparc_background.jpg ]; then
-    feh --bg-fill /opt/hsparc/resources/hsparc_background.jpg
-fi
-
-# Restart icewmbg to apply settings
-killall icewmbg 2>/dev/null
-icewmbg -r &
-
-# Show fullscreen splash
-if [ -f /opt/hsparc/resources/hsparc_background.jpg ]; then
-    feh --fullscreen --hide-pointer --no-menus \
-        /opt/hsparc/resources/hsparc_background.jpg &
-    SPLASH_PID=$!
-fi
-
-# Disable screen blanking
-xset s off -dpms s noblank
-
-# Launch HSPARC in kiosk mode
-export HSPARC_KIOSK=1
-/home/hsparc/.local/bin/hsparc-kiosk-start.sh &
-
-# Kill splash after app starts
-sleep 5
-kill $SPLASH_PID 2>/dev/null
-STARTUP_EOF
-    
-    chmod +x "${KIOSK_HOME}/.icewm/startup"
-    chown -R ${KIOSK_USER}:${KIOSK_USER} "${KIOSK_HOME}/.icewm"
-    
-    echo_info "IceWM configured ✓"
-}
-
-install_application() {
-    local source_method="$1"
-    local source_path="$2"
-    
-    echo_step "Installing HSPARC application..."
-    
-    if [ -d "$APP_DIR" ]; then
-        echo_info "Removing old installation..."
-        rm -rf "$APP_DIR"
-    fi
-    
-    mkdir -p "$APP_DIR"
-    
-    if [ "$source_method" = "download" ]; then
-        echo_info "Downloading latest release..."
-        
-        local temp_dir=$(mktemp -d)
-        local release_url="https://github.com/drjhoover/hsparc-releases/releases/download/1.0.2/hsparc-1.0.2-linux-x64.tar.gz"
-        
-        cd "$temp_dir"
-        curl -L -o hsparc.tar.gz "$release_url"
-        
-        if [ ! -f hsparc.tar.gz ]; then
-            echo_error "Failed to download release"
-            rm -rf "$temp_dir"
-            return 1
-        fi
-        
-        echo_info "Extracting..."
-        tar -xzf hsparc.tar.gz -C "$APP_DIR"
-        rm -rf "$temp_dir"
-        
-    elif [ "$source_method" = "local" ]; then
-        echo_info "Installing from: ${source_path}"
-        
-        if [[ "$source_path" =~ \.tar\.gz$ ]]; then
-            tar -xzf "$source_path" -C "$APP_DIR" --strip-components=1
-        elif [ -d "$source_path" ]; then
-            cp -r "$source_path/"* "$APP_DIR/"
-        else
-            echo_error "Invalid source path: $source_path"
-            return 1
-        fi
-    fi
-    
-    chmod +x "$APP_DIR/hsparc" 2>/dev/null || true
-    chown -R ${KIOSK_USER}:${KIOSK_USER} "$APP_DIR"
-    
-    echo_info "Application installed ✓"
-}
-
-create_kiosk_launcher() {
-    echo_step "Creating kiosk launcher..."
-    
-    mkdir -p "${KIOSK_HOME}/.local/bin"
-    
-    cat > "${KIOSK_HOME}/.local/bin/hsparc-kiosk-start.sh" << 'SCRIPT_EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-LOG="/tmp/hsparc-kiosk-$(date +%Y%m%d-%H%M%S).log"
-: "${DISPLAY:=:0}"
-
-log() {
-    echo "[$(date --iso-8601=seconds)] $*" | tee -a "$LOG"
-}
-
-log "======================================"
-log "HSPARC Kiosk Startup"
-log "======================================"
-
-# Wait for X server
-for i in {1..60}; do
-    if xset q &>/dev/null; then
-        log "X server ready"
-        break
-    fi
-    [ $i -eq 60 ] && { log "ERROR: X server timeout"; exit 1; }
-    sleep 0.5
-done
-
-# Configure display
 xset s off
 xset -dpms
 xset s noblank
+unclutter -idle 0.5 -root &
+icewm-session &
+sleep 2
+/opt/hsparc/venv/bin/python /opt/hsparc/main.py
+EOFXINITRC
 
-# Hide cursor
-unclutter -idle 0.1 -root &
+chmod +x /home/$KIOSK_USER/.xinitrc
 
-# Launch HSPARC
-log "Launching HSPARC..."
-cd /opt/hsparc
-./hsparc 2>&1 | tee -a "$LOG"
-SCRIPT_EOF
-    
-    chmod +x "${KIOSK_HOME}/.local/bin/hsparc-kiosk-start.sh"
-    chown -R ${KIOSK_USER}:${KIOSK_USER} "${KIOSK_HOME}/.local"
-    
-    echo_info "Kiosk launcher created ✓"
-}
+# Auto-start X on login
+cat >> /home/$KIOSK_USER/.bash_profile << 'EOFBASH'
+if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
+    exec startx
+fi
+EOFBASH
 
-configure_autologin() {
-    disable_power_management
-    configure_sudo_privileges
-    echo_step "Configuring GDM auto-login..."
-    
-    local GDM_CONF="/etc/gdm3/custom.conf"
-    
-    if [ ! -f "$GDM_CONF" ]; then
-        echo_error "GDM config not found"
-        return 1
-    fi
-    
-    if ! grep -q "AutomaticLoginEnable = true" "$GDM_CONF"; then
-        sed -i '/\[daemon\]/a AutomaticLoginEnable = true' "$GDM_CONF"
-        sed -i "/AutomaticLoginEnable = true/a AutomaticLogin = ${KIOSK_USER}" "$GDM_CONF"
-        echo_info "Auto-login configured ✓"
-    else
-        echo_warn "Auto-login already configured"
-    fi
-    
-    mkdir -p "${KIOSK_HOME}/.config/autostart"
-    cat > "${KIOSK_HOME}/.config/autostart/hsparc-kiosk.desktop" << EOF
-[Desktop Entry]
-Type=Application
-Name=HSPARC Kiosk
-Exec=${KIOSK_HOME}/.local/bin/hsparc-kiosk-start.sh
-X-GNOME-Autostart-enabled=true
-EOF
-    
-    chown -R ${KIOSK_USER}:${KIOSK_USER} "${KIOSK_HOME}/.config"
-}
+chown -R "$KIOSK_USER:$KIOSK_USER" /home/$KIOSK_USER
 
-disable_power_management() {
-    configure_sudo_privileges
-    echo_step "Disabling power management for kiosk..."
-    
-    # Prevent system suspend/hibernate
-    systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target 2>/dev/null || true
-    
-    # Configure logind to ignore power events
-    if ! grep -q "HSPARC Kiosk" /etc/systemd/logind.conf; then
-        cat >> /etc/systemd/logind.conf << 'LOGIND_EOF'
+# Cleanup
+rm -rf /tmp/hsparc-install
 
-# HSPARC Kiosk - Disable all power management
-HandleLidSwitch=ignore
-HandleLidSwitchExternalPower=ignore
-IdleAction=ignore
-LOGIND_EOF
-        
-        systemctl restart systemd-logind.service 2>/dev/null || true
-    fi
-    
-    echo_info "Power management disabled ✓"
-}
+echo ""
+echo_info "=========================================="
+echo_info "  Installation Complete!"
+echo_info "=========================================="
+echo ""
+echo_info "HSPARC v${VERSION} has been installed"
+echo_info "Location: ${INSTALL_DIR}"
+echo ""
+echo_info "Next steps:"
+echo_info "  1. Reboot: sudo reboot"
+echo_info "  2. System will auto-login and start HSPARC"
+echo ""
+echo_info "Manual start: sudo systemctl start hsparc"
+echo_info "Check status: sudo systemctl status hsparc"
+echo ""
 
-configure_sudo_privileges() {
-    echo_step "Configuring sudo privileges for shutdown/reboot..."
-    
-    cat > /etc/sudoers.d/hsparc-shutdown << 'SUDO_EOF'
-# Allow hsparc user to shutdown/reboot without password
-hsparc ALL=(ALL) NOPASSWD: /sbin/shutdown, /sbin/reboot, /sbin/poweroff
-SUDO_EOF
-    
-    chmod 0440 /etc/sudoers.d/hsparc-shutdown
-    
-    echo_info "Sudo privileges configured ✓"
-}
-
-full_install() {
-    echo ""
-    echo_info "=========================================="
-    echo_info "   FULL INSTALLATION"
-    echo_info "=========================================="
-    
-    install_dependencies
-    create_user
-    configure_icewm
-    
-    echo ""
-    echo_prompt "Installation source:"
-    echo "  1) Download latest from GitHub"
-    echo "  2) Install from local archive/directory"
-    echo -n "Select (1-2): "
-    read -r source_choice
-    
-    case $source_choice in
-        1)
-            install_application "download" ""
-            ;;
-        2)
-            echo_prompt "Enter path to archive (.tar.gz) or directory:"
-            read -r source_path
-            install_application "local" "$source_path"
-            ;;
-        *)
-            echo_error "Invalid choice"
-            return 1
-            ;;
-    esac
-    
-    create_kiosk_launcher
-    configure_autologin
-    disable_power_management
-    configure_sudo_privileges
-    
-    echo ""
-    echo_info "=========================================="
-    echo_info "   INSTALLATION COMPLETE!"
-    echo_info "=========================================="
-    echo ""
-    echo_info "Reboot to start HSPARC in kiosk mode"
-    echo ""
-}
-
-show_menu() {
-    clear
-    show_banner
-    
-    if is_installed; then
-        echo_info "Status: INSTALLED (version $(get_installed_version))"
-    else
-        echo_info "Status: NOT INSTALLED"
-    fi
-    
-    echo ""
-    echo "Select an operation:"
-    echo ""
-    echo "  1) Full Installation     - Install HSPARC with user and system config"
-    echo "  2) Reinstall App Only    - Reinstall app, preserve data and config"
-    echo "  3) Update App Only       - Update to latest version from repository"
-    echo "  4) Uninstall            - Remove HSPARC from this system"
-    echo "  5) List Backups         - Show available backups"
-    echo "  6) Restore Backup       - Restore data from backup"
-    echo "  0) Exit"
-    echo ""
-    echo -n "Enter choice [0-6]: "
-}
-
-main() {
-    if [ "$EUID" -ne 0 ]; then
-        echo_error "This script must be run as root (use sudo)"
-        exit 1
-    fi
-    
-    while true; do
-        show_menu
-        read -r choice
-        
-        case $choice in
-            1) full_install ;;
-            0) echo ""; echo_info "Goodbye!"; exit 0 ;;
-            *) echo_error "Invalid choice"; sleep 2 ;;
-        esac
-        
-        echo ""
-        echo_prompt "Press Enter to continue..."
-        read -r
-    done
-}
-
-main

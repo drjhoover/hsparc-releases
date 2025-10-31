@@ -17,9 +17,8 @@ if ! curl -fsSL "$SETUP_URL" -o "$TEMP_SCRIPT"; then
 fi
 
 chmod +x "$TEMP_SCRIPT"
-
 echo "Launching installer..."
 echo ""
 
-# Execute the script directly (not piped, so stdin works)
+# Execute the script
 exec "$TEMP_SCRIPT"
