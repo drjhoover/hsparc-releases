@@ -12,7 +12,6 @@ mkdir -p build dist
 # Copy source files
 echo "📦 Copying source files..."
 cp -r $SOURCE_DIR/hsparc build/
-cp -r $SOURCE_DIR/resources build/
 cp $SOURCE_DIR/main.py build/
 cp $SOURCE_DIR/requirements_current.txt build/requirements.txt
 
@@ -21,6 +20,10 @@ echo "🔐 Obfuscating with PyArmor Pro..."
 cd build
 pyarmor gen --enable-bcc --recursive --output ../dist/hsparc-$VERSION .
 cd ..
+
+# Copy non-Python resources AFTER obfuscation
+echo "📦 Adding resources directory..."
+cp -r $SOURCE_DIR/resources dist/hsparc-$VERSION/
 
 # Add version and requirements
 echo "$VERSION" > dist/hsparc-$VERSION/.version
