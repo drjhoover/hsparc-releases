@@ -5,6 +5,12 @@ set -e
 
 echo "Installing HSPARC v1.0.7..."
 
+# Check if running from correct directory
+if [ ! -f "db.py" ]; then
+    echo "Error: Must run from v1.0.7 directory"
+    exit 1
+fi
+
 # Install python-docx dependency
 echo "Installing python-docx..."
 pip install python-docx --break-system-packages
@@ -21,5 +27,13 @@ sudo cp observer_instructions_dialog.py /opt/hsparc/hsparc/ui/widgets/observer_i
 sudo cp recognition_check_dialog.py /opt/hsparc/hsparc/ui/widgets/recognition_check_dialog.py
 sudo cp researcher.py /opt/hsparc/hsparc/ui/researcher.py
 
-echo "Installation complete!"
+echo ""
+echo "✓ Installation complete!"
+echo ""
 echo "Database migration will run automatically on first launch."
+echo "New features:"
+echo "  - Controller calibration with construct assignment"
+echo "  - Normalized input values (-1.0 to 1.0)"
+echo "  - Input filtering (record only what you need)"
+echo "  - Fixed analysis report generation"
+echo ""
