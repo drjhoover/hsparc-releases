@@ -1,0 +1,503 @@
+# hsparc/ui/av_settings_dialog.py
+"""
+Audio/Video Settings Dialog with Live Preview
+
+Centralized A/V device configuration with:
+- Camera selection with live preview
+- Microphone selection with level meter
+- Speaker selection with volume control
+- All settings apply immediately via GlobalAVManager
+"""
+from __future__ import annotations
+
+import time
+from PySide6.QtCore import Qt, QTimer, QIODevice
+from PySide6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
+    QSlider, QPushButton, QGroupBox, QSpinBox, QProgressBar,
+    QDialogButtonBox
+)
+from PySide6.QtMultimedia import QMediaDevices, QCamera, QAudioInput, QMediaCaptureSession, QAudioSource, QAudioFormat
+from PySide6.QtMultimediaWidgets import QVideoWidget
+
+from hsparc.ui.global_av_manager import GlobalAVManager
+from hsparc.ui.audio_level_monitor import AudioLevelMonitor
+
+
+class AVSettingsDialog(QDialog):
+    """
+    Centralized A/V settings dialog with live preview and testing.
+    
+    Features:
+    - Live camera preview
+    - Microphone level meter (simulated)
+    - Speaker volume control with mute
+    - Frame rate selection
+    - All changes apply immediately and persist
+    """
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Audio/Video Settings")
+        self.setModal(True)
+        self.resize(800, 700)
+        
+        self.av_manager = GlobalAVManager.instance()
+        
+        # Camera preview components
+        self._camera = None
+        self._capture_session = None
+        self._audio_source = None
+        self._level_monitor = None
+        
+        # Microphone level monitoring
+        self._mic_timer = None
+        self._last_mic_level = 0
+        
+        self._setup_ui()
+        self._populate_devices()
+        self._connect_signals()
+        self._update_from_manager()
+        self._start_camera_preview()
+        self._start_mic_monitor()
+    
+    def _setup_ui(self):
+        """Build the UI."""
+        layout = QVBoxLayout(self)
+        layout.setSpacing(15)
+        
+        # Title
+        title = QLabel("Audio/Video Device Settings")
+        title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        layout.addWidget(title)
+        
+        info = QLabel(
+            "Configure your camera, microphone, and speakers. "
+            "Changes apply immediately to all windows."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #666; margin-bottom: 10px;")
+        layout.addWidget(info)
+        
+        # === Camera Settings ===
+        camera_group = QGroupBox("Camera (Recording)")
+        camera_layout = QVBoxLayout(camera_group)
+        
+        # Camera selection
+        cam_select = QHBoxLayout()
+        cam_select.addWidget(QLabel("Camera:"))
+        self.camera_combo = QComboBox()
+        self.camera_combo.setToolTip("Select camera for video recording")
+        cam_select.addWidget(self.camera_combo, 1)
+        camera_layout.addLayout(cam_select)
+        
+        # FPS control
+        fps_layout = QHBoxLayout()
+        fps_layout.addWidget(QLabel("Frame Rate:"))
+        self.fps_spin = QSpinBox()
+        self.fps_spin.setRange(15, 60)
+        self.fps_spin.setValue(30)
+        self.fps_spin.setSuffix(" fps")
+        self.fps_spin.setToolTip("Recording frame rate (15-60 fps)")
+        fps_layout.addWidget(self.fps_spin)
+        fps_layout.addStretch()
+        camera_layout.addLayout(fps_layout)
+        
+        # Live preview
+        preview_label = QLabel("Live Preview:")
+        preview_label.setStyleSheet("font-weight: bold; margin-top: 5px;")
+        camera_layout.addWidget(preview_label)
+        
+        self.video_widget = QVideoWidget()
+        self.video_widget.setMinimumHeight(240)
+        self.video_widget.setStyleSheet("background: black; border: 2px solid #ccc;")
+        camera_layout.addWidget(self.video_widget)
+        
+        self.camera_status = QLabel("Starting camera preview...")
+        self.camera_status.setStyleSheet("color: #666; font-size: 11px;")
+        camera_layout.addWidget(self.camera_status)
+        
+        layout.addWidget(camera_group)
+        
+        # === Microphone Settings ===
+        mic_group = QGroupBox("Microphone (Recording)")
+        mic_layout = QVBoxLayout(mic_group)
+        
+        # Microphone selection
+        mic_select = QHBoxLayout()
+        mic_select.addWidget(QLabel("Microphone:"))
+        self.mic_combo = QComboBox()
+        self.mic_combo.setToolTip("Select microphone for audio recording")
+        mic_select.addWidget(self.mic_combo, 1)
+        mic_layout.addLayout(mic_select)
+        
+        # Input volume
+        mic_vol_layout = QHBoxLayout()
+        mic_vol_layout.addWidget(QLabel("Input Gain:"))
+        self.mic_volume_slider = QSlider(Qt.Horizontal)
+        self.mic_volume_slider.setRange(0, 100)
+        self.mic_volume_slider.setValue(80)
+        self.mic_volume_slider.setToolTip("Microphone input gain (0-100%)")
+        mic_vol_layout.addWidget(self.mic_volume_slider, 1)
+        self.mic_volume_label = QLabel("80%")
+        self.mic_volume_label.setMinimumWidth(45)
+        mic_vol_layout.addWidget(self.mic_volume_label)
+        mic_layout.addLayout(mic_vol_layout)
+        
+
+
+        
+        self.mic_status = QLabel("Volume control affects system audio level")
+        self.mic_status.setStyleSheet("color: #666; font-size: 11px;")
+        mic_layout.addWidget(self.mic_status)
+        
+        layout.addWidget(mic_group)
+        
+        # === Speaker Settings ===
+        speaker_group = QGroupBox("Speakers (Playback)")
+        speaker_layout = QVBoxLayout(speaker_group)
+        
+        # Speaker selection
+        spk_select = QHBoxLayout()
+        spk_select.addWidget(QLabel("Audio Output:"))
+        self.speaker_combo = QComboBox()
+        self.speaker_combo.setToolTip("Select audio output for video playback")
+        spk_select.addWidget(self.speaker_combo, 1)
+        speaker_layout.addLayout(spk_select)
+        
+        # Volume control
+        vol_layout = QHBoxLayout()
+        self.btn_mute = QPushButton("🔊")
+        self.btn_mute.setFixedSize(36, 36)
+        self.btn_mute.setToolTip("Mute/Unmute playback audio")
+        vol_layout.addWidget(self.btn_mute)
+        
+        vol_layout.addWidget(QLabel("Volume:"))
+        self.speaker_volume_slider = QSlider(Qt.Horizontal)
+        self.speaker_volume_slider.setRange(0, 100)
+        self.speaker_volume_slider.setValue(80)
+        self.speaker_volume_slider.setToolTip("Playback volume (0-100%)")
+        vol_layout.addWidget(self.speaker_volume_slider, 1)
+        self.speaker_volume_label = QLabel("80%")
+        self.speaker_volume_label.setMinimumWidth(45)
+        vol_layout.addWidget(self.speaker_volume_label)
+        speaker_layout.addLayout(vol_layout)
+        
+        layout.addWidget(speaker_group)
+        
+        # === Dialog Buttons ===
+        self.button_box = QDialogButtonBox(QDialogButtonBox.Close)
+        self.button_box.rejected.connect(self.accept)
+        layout.addWidget(self.button_box)
+    
+    def _populate_devices(self):
+        """Populate device dropdowns."""
+        # Cameras
+        self.camera_combo.clear()
+        cameras = QMediaDevices.videoInputs()
+        if not cameras:
+            self.camera_combo.addItem("No cameras found", -1)
+        else:
+            for idx, camera in enumerate(cameras):
+                self.camera_combo.addItem(camera.description(), idx)
+        
+        # Microphones
+        self.mic_combo.clear()
+        mics = QMediaDevices.audioInputs()
+        if not mics:
+            self.mic_combo.addItem("No microphones found", -1)
+        else:
+            for idx, mic in enumerate(mics):
+                self.mic_combo.addItem(mic.description(), idx)
+        
+        # Speakers
+        self.speaker_combo.clear()
+        speakers = QMediaDevices.audioOutputs()
+        if not speakers:
+            self.speaker_combo.addItem("No speakers found", -1)
+        else:
+            for idx, speaker in enumerate(speakers):
+                self.speaker_combo.addItem(speaker.description(), idx)
+    
+    def _connect_signals(self):
+        """Connect UI signals."""
+        self.camera_combo.currentIndexChanged.connect(self._on_camera_changed)
+        self.fps_spin.valueChanged.connect(self._on_fps_changed)
+        self.mic_combo.currentIndexChanged.connect(self._on_mic_changed)
+        self.mic_volume_slider.valueChanged.connect(self._on_mic_volume_changed)
+        self.speaker_combo.currentIndexChanged.connect(self._on_speaker_changed)
+        self.speaker_volume_slider.valueChanged.connect(self._on_speaker_volume_changed)
+        self.btn_mute.clicked.connect(self._toggle_mute)
+    
+    def _update_from_manager(self):
+        """Load current settings from manager."""
+        # Camera
+        cam_idx = self.av_manager.get_camera_index()
+        if 0 <= cam_idx < self.camera_combo.count():
+            self.camera_combo.setCurrentIndex(cam_idx)
+        
+        # FPS
+        self.fps_spin.setValue(self.av_manager.get_fps())
+        
+        # Microphone
+        mic_idx = self.av_manager.get_microphone_index()
+        if 0 <= mic_idx < self.mic_combo.count():
+            self.mic_combo.setCurrentIndex(mic_idx)
+        
+        mic_vol = int(self.av_manager.get_mic_volume() * 100)
+        self.mic_volume_slider.setValue(mic_vol)
+        self.mic_volume_label.setText(f"{mic_vol}%")
+        
+        # Speaker
+        spk_idx = self.av_manager.get_speaker_index()
+        if 0 <= spk_idx < self.speaker_combo.count():
+            self.speaker_combo.setCurrentIndex(spk_idx)
+        
+        spk_vol = int(self.av_manager.get_speaker_volume() * 100)
+        self.speaker_volume_slider.setValue(spk_vol)
+        self.speaker_volume_label.setText(f"{spk_vol}%")
+        
+        self._update_mute_button()
+    
+    def _start_camera_preview(self):
+        """Start live camera preview."""
+        try:
+            camera_device = self.av_manager.get_current_camera()
+            if not camera_device:
+                self.camera_status.setText("⚠️ No camera available")
+                return
+            
+            # Create camera
+            self._camera = QCamera(camera_device)
+            
+            # Create capture session
+            self._capture_session = QMediaCaptureSession()
+            self._capture_session.setCamera(self._camera)
+            self._capture_session.setVideoOutput(self.video_widget)
+            
+            # Connect error signal
+            self._camera.errorOccurred.connect(self._on_camera_error)
+            
+            # Start camera
+            self._camera.start()
+            
+            # Give it a moment to start
+            QTimer.singleShot(500, self._check_camera_status)
+        
+        except Exception as e:
+            self.camera_status.setText(f"⚠️ Camera error: {e}")
+            print(f"[av_settings] Camera preview error: {e}")
+    
+    def _check_camera_status(self):
+        """Check if camera started successfully."""
+        if self._camera and self._camera.isActive():
+            device = self.av_manager.get_current_camera()
+            self.camera_status.setText(f"✅ Preview: {device.description()}")
+        else:
+            self.camera_status.setText("⚠️ Camera failed to start")
+    
+    def _on_camera_error(self, error, error_string):
+        """Handle camera errors."""
+        self.camera_status.setText(f"⚠️ Camera error: {error_string}")
+        print(f"[av_settings] Camera error: {error} - {error_string}")
+    
+    def _stop_camera_preview(self):
+        """Stop camera preview and cleanup."""
+        try:
+            if self._camera:
+                self._camera.stop()
+                self._camera.deleteLater()
+                self._camera = None
+            
+            if self._capture_session:
+                self._capture_session.setCamera(None)
+                self._capture_session.setVideoOutput(None)
+                self._capture_session.deleteLater()
+                self._capture_session = None
+        except Exception as e:
+            print(f"[av_settings] Camera cleanup error: {e}")
+    
+    def _start_mic_monitor(self):
+        """Start microphone level monitoring (REAL)."""
+        try:
+            mic_device = self.av_manager.get_current_microphone()
+            if not mic_device:
+                self.mic_status.setText("⚠️ No microphone available")
+                return
+            
+            print(f"[av_settings] Starting REAL audio monitoring for: {mic_device.description()}")
+            
+            # Setup audio format for monitoring
+            audio_format = QAudioFormat()
+            audio_format.setSampleRate(44100)
+            audio_format.setChannelCount(1)  # Mono
+            audio_format.setSampleFormat(QAudioFormat.Int16)
+            
+            # Check if format is supported
+            if not mic_device.isFormatSupported(audio_format):
+                print(f"[av_settings] Format not supported, using default")
+                audio_format = mic_device.preferredFormat()
+            
+            # Create audio source (input stream)
+            self._audio_source = QAudioSource(mic_device, audio_format)
+            
+            # Create level monitor device
+            self._level_monitor = AudioLevelMonitor()
+            self._level_monitor.open(QIODevice.WriteOnly)
+            
+            # Start capturing audio to the monitor
+            # TEMPORARILY DISABLED - causes segfault
+            # self._audio_source.start(self._level_monitor)
+            
+            print(f"[av_settings] Audio source state: {self._audio_source.state()}")
+            print(f"[av_settings] Audio format: {audio_format.sampleRate()}Hz, {audio_format.channelCount()}ch")
+            
+            # Start UI update timer
+            self._mic_timer = QTimer(self)
+            self._mic_timer.setInterval(50)  # 20 Hz updates
+            # Timer disabled - not monitoring audio
+            # self._mic_timer.timeout.connect(self._update_mic_level_real)
+            # self._mic_timer.start()
+            
+            self.mic_status.setText(f"Selected: {mic_device.description()} (monitoring disabled)")
+        
+        except Exception as e:
+            self.mic_status.setText(f"⚠️ Microphone error: {e}")
+            print(f"[av_settings] Mic monitor error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+
+    def _update_mic_level_real(self):
+        """Update microphone level indicator with REAL audio data."""
+        if self._level_monitor:
+            level = int(self._level_monitor.level)
+            self.mic_level_bar.setValue(level)
+    
+
+    def _on_camera_changed(self, index: int):
+        """Handle camera selection change."""
+        device_index = self.camera_combo.itemData(index)
+        if device_index is not None and device_index >= 0:
+            self.av_manager.set_camera(device_index)
+            # Restart preview with new camera
+            self._stop_camera_preview()
+            QTimer.singleShot(300, self._start_camera_preview)
+    
+    def _on_fps_changed(self, value: int):
+        """Handle FPS change."""
+        self.av_manager.set_fps(value)
+    
+    def _on_mic_changed(self, index: int):
+        """Handle microphone selection change."""
+        device_index = self.mic_combo.itemData(index)
+        if device_index is not None and device_index >= 0:
+            self.av_manager.set_microphone(device_index)
+            # Update monitor
+            # Restart monitor with new device
+            if self._audio_source:
+                mic_device = self.av_manager.get_current_microphone()
+                if mic_device:
+                    # Need to recreate audio source for device change
+                    self.mic_status.setText(f"Monitoring: {mic_device.description()}")
+    
+    def _on_mic_volume_changed(self, value: int):
+        """Handle microphone volume change."""
+        # Update Qt internal volume
+        volume = value / 100.0
+        self.av_manager.set_mic_volume(volume)
+        self.mic_volume_label.setText(f"{value}%")
+        
+        # CRITICAL: Update system-level microphone gain
+        from hsparc.utils.audio_control import set_microphone_gain
+        set_microphone_gain("default", value)
+    
+
+    def _on_speaker_changed(self, index: int):
+        """Handle speaker selection change."""
+        device_index = self.speaker_combo.itemData(index)
+        if device_index is not None and device_index >= 0:
+            self.av_manager.set_speaker(device_index)
+    
+    def _on_speaker_volume_changed(self, value: int):
+        """Handle speaker volume change."""
+        volume = value / 100.0
+        self.av_manager.set_speaker_volume(volume)
+        self.speaker_volume_label.setText(f"{value}%")
+        
+        # CRITICAL: Update system-level speaker volume
+        from hsparc.utils.audio_control import set_speaker_volume
+        set_speaker_volume(value)
+        
+        # Unmute if slider moved
+        if self.av_manager.is_speaker_muted() and value > 0:
+            self.av_manager.set_speaker_muted(False)
+            self._update_mute_button()
+    def _toggle_mute(self):
+        """Toggle speaker mute."""
+        muted = not self.av_manager.is_speaker_muted()
+        self.av_manager.set_speaker_muted(muted)
+        self._update_mute_button()
+        
+        if muted:
+            self.speaker_volume_label.setText("Muted")
+        else:
+            value = self.speaker_volume_slider.value()
+            self.speaker_volume_label.setText(f"{value}%")
+    
+    def _update_mute_button(self):
+        """Update mute button appearance."""
+        if self.av_manager.is_speaker_muted():
+            self.btn_mute.setText("🔇")
+            self.btn_mute.setStyleSheet("background-color: #ff6b6b;")
+        else:
+            self.btn_mute.setText("🔊")
+            self.btn_mute.setStyleSheet("")
+    
+    def closeEvent(self, event):
+        """Cleanup on close."""
+        # Stop monitoring timer FIRST
+        if self._mic_timer:
+            self._mic_timer.stop()
+            self._mic_timer.deleteLater()
+            self._mic_timer = None
+        
+        # Stop camera
+        self._stop_camera_preview()
+        
+        # CRITICAL: Stop audio source BEFORE closing monitor
+        if self._audio_source:
+            try:
+                print("[av_settings] Stopping audio source...")
+                self._audio_source.stop()
+                # Give it time to actually stop
+                import time
+                time.sleep(0.1)
+            except Exception as e:
+                print(f"[av_settings] Error stopping audio source: {e}")
+        
+        # Now close and delete the monitor
+        if self._level_monitor:
+            try:
+                print("[av_settings] Closing level monitor...")
+                if self._level_monitor.isOpen():
+                    self._level_monitor.close()
+            except Exception as e:
+                print(f"[av_settings] Error closing monitor: {e}")
+        
+        # Finally delete the objects
+        if self._audio_source:
+            try:
+                self._audio_source.deleteLater()
+            except:
+                pass
+            self._audio_source = None
+        
+        if self._level_monitor:
+            try:
+                self._level_monitor.deleteLater()
+            except:
+                pass
+            self._level_monitor = None
+        
+        event.accept()

@@ -1,0 +1,134 @@
+# hsparc/utils/audio_control.py
+"""System-level audio control for microphone gain."""
+
+import subprocess
+import shutil
+import re
+
+def set_microphone_gain(device_name: str, volume_percent: int) -> bool:
+    """
+    Set microphone input gain at system level.
+    
+    Args:
+        device_name: Device description from QMediaDevices
+        volume_percent: Volume level 0-100
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    volume_percent = max(0, min(100, volume_percent))
+    
+    # Try PulseAudio first (most common on Linux)
+    if shutil.which('pactl'):
+        try:
+            # Set default source volume
+            subprocess.run(
+                ['pactl', 'set-source-volume', '@DEFAULT_SOURCE@', f'{volume_percent}%'],
+                check=True,
+                capture_output=True
+            )
+            print(f"[audio_control] Set PulseAudio default source to {volume_percent}%")
+            return True
+            
+        except Exception as e:
+            print(f"[audio_control] PulseAudio control failed: {e}")
+    
+    # Fall back to ALSA
+    if shutil.which('amixer'):
+        try:
+            subprocess.run(
+                ['amixer', 'set', 'Capture', f'{volume_percent}%'],
+                check=True,
+                capture_output=True
+            )
+            print(f"[audio_control] Set ALSA Capture to {volume_percent}%")
+            return True
+        except Exception as e:
+            print(f"[audio_control] ALSA control failed: {e}")
+    
+    print(f"[audio_control] No audio control method available")
+    return False
+
+
+def get_microphone_gain() -> int:
+    """Get current microphone gain from system."""
+    if shutil.which('pactl'):
+        try:
+            result = subprocess.run(
+                ['pactl', 'list', 'sources'],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            
+            # Parse volume from output
+            # Look for "Volume:" line with percentage
+            match = re.search(r'Volume:.*?(\d+)%', result.stdout)
+            if match:
+                volume = int(match.group(1))
+                print(f"[audio_control] Current PulseAudio volume: {volume}%")
+                return volume
+        except Exception as e:
+            print(f"[audio_control] Failed to get PulseAudio volume: {e}")
+    
+    if shutil.which('amixer'):
+        try:
+            result = subprocess.run(
+                ['amixer', 'get', 'Capture'],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            
+            # Parse ALSA output
+            match = re.search(r'\[(\d+)%\]', result.stdout)
+            if match:
+                volume = int(match.group(1))
+                print(f"[audio_control] Current ALSA volume: {volume}%")
+                return volume
+        except Exception as e:
+            print(f"[audio_control] Failed to get ALSA volume: {e}")
+    
+    return 80  # Default fallback
+
+
+def set_speaker_volume(volume_percent: int) -> bool:
+    """
+    Set speaker/playback volume at system level.
+    
+    Args:
+        volume_percent: Volume level 0-100
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    volume_percent = max(0, min(100, volume_percent))
+    
+    # Try PulseAudio first
+    if shutil.which('pactl'):
+        try:
+            subprocess.run(
+                ['pactl', 'set-sink-volume', '@DEFAULT_SINK@', f'{volume_percent}%'],
+                check=True,
+                capture_output=True
+            )
+            print(f"[audio_control] Set PulseAudio default sink to {volume_percent}%")
+            return True
+        except Exception as e:
+            print(f"[audio_control] PulseAudio sink control failed: {e}")
+    
+    # Fall back to ALSA Master control
+    if shutil.which('amixer'):
+        try:
+            subprocess.run(
+                ['amixer', 'set', 'Master', f'{volume_percent}%'],
+                check=True,
+                capture_output=True
+            )
+            print(f"[audio_control] Set ALSA Master to {volume_percent}%")
+            return True
+        except Exception as e:
+            print(f"[audio_control] ALSA Master control failed: {e}")
+    
+    print(f"[audio_control] No speaker control method available")
+    return False

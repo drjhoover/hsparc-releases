@@ -1,0 +1,821 @@
+# hsparc/ui/observer.py
+from __future__ import annotations
+
+import os
+import hashlib
+import random
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional, Dict, Tuple, List
+from uuid import uuid4
+
+import cv2
+import numpy as np
+
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QKeyEvent, QImage, QPixmap
+from PySide6.QtWidgets import (
+    QDialog,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QMessageBox, QStatusBar, QSlider, QLineEdit, QCheckBox
+)
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PySide6.QtMultimediaWidgets import QVideoWidget
+
+from hsparc.models import db as dbm
+from hsparc.models.db import Recording, ObserverSession, InputStream, InputEvent
+from hsparc.ui.widgets.assign_dialog import AssignControllersDialog
+from hsparc.input.gamepad import GamepadPoller
+from hsparc.ui.common import show_fullscreen_or_center
+from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import QSize
+from PySide6.QtWidgets import QShortcut
+
+
+def _ms_to_clock(ms: int) -> str:
+    if ms < 0:
+        ms = 0
+    s, ms = divmod(ms, 1000)
+    m, s = divmod(s, 60)
+    h, m = divmod(m, 60)
+    if h:
+        return f"{h:d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
+
+# ========== Security Helpers ==========
+def hash_pin(pin: str) -> str:
+    return hashlib.sha256(pin.encode('utf-8')).hexdigest()
+
+
+def verify_pin(stored_hash: str, entered_pin: str) -> bool:
+    return hash_pin(entered_pin) == stored_hash
+
+
+def log_access(case_id: str, action: str, success: bool = True):
+    timestamp = datetime.utcnow().isoformat()
+    status = "SUCCESS" if success else "FAILED"
+    print(f"[ACCESS LOG] {timestamp} | Case: {case_id[:8]} | {action} | {status}")
+
+
+# ========== Inline Recognition Dialog (deterministic, no looping) ==========
+class InlineRecognitionDialog(QDialog):
+    """
+    Minimal inline dialog we fully control.
+    - 'More thumbnails' regenerates *in place* (no close)
+    - 'I don't recognize anyone' => PASS (True), accept()
+    - 'I recognize someone'      => FAIL (False), accept()
+    """
+    def __init__(self, frames: List[QPixmap], regenerate, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Recognition Check")
+        self.setModal(True)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self._regenerate = regenerate
+        self.passed: Optional[bool] = None
+
+        layout = QVBoxLayout(self)
+
+        msg = QLabel("Please review the images below.\n"
+                     "Do you recognize anyone in these thumbnails?")
+        msg.setWordWrap(True)
+        layout.addWidget(msg)
+
+        # thumbs row
+        self._thumbs_row = QHBoxLayout()
+        self._thumb_labels: List[QLabel] = []
+        layout.addLayout(self._thumbs_row)
+
+        def _fit(pix: QPixmap, max_w=320, max_h=180) -> QPixmap:
+            return pix.scaled(max_w, max_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+        def _set_frames(pixmaps: List[QPixmap]):
+            # clear old
+            for lbl in self._thumb_labels:
+                self._thumbs_row.removeWidget(lbl)
+                lbl.setParent(None)
+            self._thumb_labels.clear()
+            # add new
+            for pm in pixmaps[:3]:
+                lbl = QLabel()
+                lbl.setPixmap(_fit(pm))
+                self._thumbs_row.addWidget(lbl)
+                self._thumb_labels.append(lbl)
+
+        _set_frames(frames)
+
+        # buttons
+        btns = QHBoxLayout()
+        btn_more = QPushButton("Show different thumbnails")
+        btn_none = QPushButton("I don’t recognize anyone")
+        btn_yes = QPushButton("I recognize someone")
+        btns.addWidget(btn_more)
+        btns.addStretch(1)
+        btns.addWidget(btn_none)
+        btns.addWidget(btn_yes)
+        layout.addLayout(btns)
+
+        # wire up
+        def on_more():
+            try:
+                new_frames = self._regenerate()
+                if new_frames:
+                    _set_frames(new_frames)
+            except Exception as e:
+                QMessageBox.warning(self, "Couldn’t regenerate",
+                                    f"Failed to get new thumbnails:\n{e}")
+
+        def on_none():
+            self.passed = True   # PASS
+            QMessageBox.information(self, "Recognition Check",
+                                    "Success. No one recognized.\nStarting observer session.")
+            self.accept()
+
+        def on_yes():
+            self.passed = False  # FAIL
+            QMessageBox.warning(self, "Recognition Check",
+                                "Participant recognized someone.\nObserver session will NOT start.")
+            self.accept()
+
+        btn_more.clicked.connect(on_more)
+        btn_none.clicked.connect(on_none)
+        btn_yes.clicked.connect(on_yes)
+
+
+class PinDialog(QMessageBox):
+    def __init__(self, parent=None, title="Enter Case PIN", message="Enter the PIN:"):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setText(message)
+        self.setIcon(QMessageBox.Question)
+
+        self.pin_input = QLineEdit()
+        self.pin_input.setEchoMode(QLineEdit.Password)
+        self.pin_input.setPlaceholderText("Enter 4-8 digit PIN")
+        self.pin_input.setMaxLength(8)
+
+        layout = self.layout()
+        layout.addWidget(self.pin_input, 1, 1)
+
+        self.addButton(QMessageBox.Ok)
+        self.addButton(QMessageBox.Cancel)
+        self.setDefaultButton(QMessageBox.Ok)
+
+    def get_pin(self) -> str:
+        return self.pin_input.text().strip()
+
+    @staticmethod
+    def get_pin_from_user(parent=None, title="Enter Case PIN", message="Enter the PIN:"):
+        dialog = PinDialog(parent, title, message)
+        dialog.pin_input.setFocus()
+        if dialog.exec() == QMessageBox.Ok:
+            return dialog.get_pin()
+        return None
+
+
+class ObserverWindow(QMainWindow):
+    """
+    Observer mode with lockdown and optional recognition check.
+    """
+
+    def __init__(self, parent=None, recording_id: Optional[str] = None,
+                 session_id: Optional[str] = None, case_id: Optional[str] = None, **_kw):
+        super().__init__(parent)
+
+        self.recording_id: Optional[str] = recording_id
+        self._session_id: Optional[str] = session_id
+        self._case_id: Optional[str] = case_id
+        self._poller: Optional[GamepadPoller] = None
+        self.assigned: Dict[str, Optional[dict]] = {"A": None, "B": None}
+        self._allow_close: bool = False
+
+        # Recognition check state
+        self.video_path: Optional[Path] = None
+        self._thumb_history: List[float] = []
+
+        # Lockdown
+        self.setWindowFlags(
+            Qt.Window |
+            Qt.CustomizeWindowHint |
+            Qt.WindowTitleHint |
+            Qt.WindowStaysOnTopHint |
+            Qt.WindowMaximizeButtonHint
+        )
+        self.setWindowTitle("HSPARC – Observer Mode [LOCKED]")
+        self.resize(1100, 680)
+        self.setWindowModality(Qt.ApplicationModal)
+
+        # UI
+        central = QWidget(self)
+        root = QVBoxLayout(central)
+
+        header = QHBoxLayout()
+        header_label = QLabel("Observer Mode")
+        header_label.setStyleSheet("font-size:16px;font-weight:600;")
+        header.addWidget(header_label)
+        header.addStretch(1)
+
+        self.btn_exit = QPushButton("🔒 Exit Observer Mode (Requires PIN)", self)
+        self.btn_exit.setStyleSheet("""
+            QPushButton {
+                background-color: #d9534f;
+                color: white;
+                padding: 10px 20px;
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QPushButton:hover { background-color: #c9302c; }
+        """)
+        self.btn_exit.clicked.connect(self._exit_with_pin)
+        header.addWidget(self.btn_exit)
+        root.addLayout(header)
+
+        top = QHBoxLayout()
+        self.btn_assign = QPushButton("Assign Controllers…", self)
+        self.chk_recognition = QCheckBox("Require Recognition Check", self)
+        self.chk_recognition.setToolTip(
+            "Show random frames from the video and ask participants\n"
+            "if they recognize anyone before starting the session."
+        )
+        self.btn_start = QPushButton("Start Observer Session", self)
+        self.btn_stop = QPushButton("Stop", self)
+        self.btn_stop.setEnabled(False)
+        top.addWidget(self.btn_assign)
+        top.addWidget(self.chk_recognition)
+        top.addWidget(self.btn_start)
+        top.addWidget(self.btn_stop)
+        top.addStretch(1)
+        root.addLayout(top)
+
+        self.video = QVideoWidget(self)
+        root.addWidget(self.video, 10)
+
+        transport = QHBoxLayout()
+        self.slider = QSlider(Qt.Horizontal, self)
+        self.slider.setRange(0, 0)
+        self.slider.setEnabled(False)
+        self.lbl_pos = QLabel("00:00", self)
+        self.lbl_dur = QLabel("00:00", self)
+        transport.addWidget(self.lbl_pos)
+        transport.addWidget(self.slider, 1)
+        transport.addWidget(self.lbl_dur)
+        root.addLayout(transport)
+
+        self.setCentralWidget(central)
+        self.setStatusBar(QStatusBar(self))
+        self.lbl_status = QLabel("Idle. Click 'Start Observer Session' to begin.", self)
+        root.addWidget(self.lbl_status)
+
+        self.player = QMediaPlayer(self)
+        self.audio = QAudioOutput(self)
+        self.player.setVideoOutput(self.video)
+        self.player.setAudioOutput(self.audio)
+
+        self.btn_assign.clicked.connect(self._assign)
+        self.btn_start.clicked.connect(self._start)
+        self.btn_stop.clicked.connect(self._stop)
+        self.player.positionChanged.connect(self._on_position)
+        self.player.durationChanged.connect(self._on_duration)
+        self.slider.sliderMoved.connect(self._on_slider_moved)
+
+        # Load video
+        if self.recording_id:
+            try:
+                with dbm.get_session() as s:
+                    rec = s.get(Recording, self.recording_id)
+                    if rec and rec.video_path and os.path.exists(rec.video_path):
+                        self.video_path = Path(rec.video_path)
+                        self.player.setSource(QUrl.fromLocalFile(str(self.video_path)))
+                        self.statusBar().showMessage(f"Loaded video: {rec.video_path}", 4000)
+                    else:
+                        self.statusBar().showMessage("No video found for this recording.", 4000)
+            except Exception as e:
+                self.statusBar().showMessage(f"Failed to load video: {e}", 5000)
+
+        show_fullscreen_or_center(self, True)
+        self._prompt_initial_assignment()        # --- Always-available Close button (toolbar) ---
+        try:
+            _tb = self.addToolBar('Window')
+            _tb.setMovable(False)
+            _tb.setFloatable(False)
+            _tb.setIconSize(QSize(20, 20))
+            _act_close = QAction('Close', self)
+            _act_close.setShortcut(QKeySequence('Ctrl+W'))
+            _act_close.triggered.connect(self.close)
+            _tb.addAction(_act_close)
+            # Keyboard shortcut as well
+            try:
+                QShortcut(QKeySequence('Ctrl+W'), self, activated=self.close)
+            except Exception:
+                pass
+        except Exception as _e:
+            print(f'[chooser/{clsname}] toolbar add failed:', _e)
+super().__init__(parent)
+
+        self.recording_id: Optional[str] = recording_id
+        self._session_id: Optional[str] = session_id
+        self._case_id: Optional[str] = case_id
+        self._poller: Optional[GamepadPoller] = None
+        self.assigned: Dict[str, Optional[dict]] = {"A": None, "B": None}
+        self._allow_close: bool = False
+
+        # Recognition check state
+        self.video_path: Optional[Path] = None
+        self._thumb_history: List[float] = []
+
+        # Lockdown
+        self.setWindowFlags(
+            Qt.Window |
+            Qt.CustomizeWindowHint |
+            Qt.WindowTitleHint |
+            Qt.WindowStaysOnTopHint |
+            Qt.WindowMaximizeButtonHint
+        )
+        self.setWindowTitle("HSPARC – Observer Mode [LOCKED]")
+        self.resize(1100, 680)
+        self.setWindowModality(Qt.ApplicationModal)
+
+        # UI
+        central = QWidget(self)
+        root = QVBoxLayout(central)
+
+        header = QHBoxLayout()
+        header_label = QLabel("Observer Mode")
+        header_label.setStyleSheet("font-size:16px;font-weight:600;")
+        header.addWidget(header_label)
+        header.addStretch(1)
+
+        self.btn_exit = QPushButton("🔒 Exit Observer Mode (Requires PIN)", self)
+        self.btn_exit.setStyleSheet("""
+            QPushButton {
+                background-color: #d9534f;
+                color: white;
+                padding: 10px 20px;
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QPushButton:hover { background-color: #c9302c; }
+        """)
+        self.btn_exit.clicked.connect(self._exit_with_pin)
+        header.addWidget(self.btn_exit)
+        root.addLayout(header)
+
+        top = QHBoxLayout()
+        self.btn_assign = QPushButton("Assign Controllers…", self)
+        self.chk_recognition = QCheckBox("Require Recognition Check", self)
+        self.chk_recognition.setToolTip(
+            "Show random frames from the video and ask participants\n"
+            "if they recognize anyone before starting the session."
+        )
+        self.btn_start = QPushButton("Start Observer Session", self)
+        self.btn_stop = QPushButton("Stop", self)
+        self.btn_stop.setEnabled(False)
+        top.addWidget(self.btn_assign)
+        top.addWidget(self.chk_recognition)
+        top.addWidget(self.btn_start)
+        top.addWidget(self.btn_stop)
+        top.addStretch(1)
+        root.addLayout(top)
+
+        self.video = QVideoWidget(self)
+        root.addWidget(self.video, 10)
+
+        transport = QHBoxLayout()
+        self.slider = QSlider(Qt.Horizontal, self)
+        self.slider.setRange(0, 0)
+        self.slider.setEnabled(False)
+        self.lbl_pos = QLabel("00:00", self)
+        self.lbl_dur = QLabel("00:00", self)
+        transport.addWidget(self.lbl_pos)
+        transport.addWidget(self.slider, 1)
+        transport.addWidget(self.lbl_dur)
+        root.addLayout(transport)
+
+        self.setCentralWidget(central)
+        self.setStatusBar(QStatusBar(self))
+        self.lbl_status = QLabel("Idle. Click 'Start Observer Session' to begin.", self)
+        root.addWidget(self.lbl_status)
+
+        self.player = QMediaPlayer(self)
+        self.audio = QAudioOutput(self)
+        self.player.setVideoOutput(self.video)
+        self.player.setAudioOutput(self.audio)
+
+        self.btn_assign.clicked.connect(self._assign)
+        self.btn_start.clicked.connect(self._start)
+        self.btn_stop.clicked.connect(self._stop)
+        self.player.positionChanged.connect(self._on_position)
+        self.player.durationChanged.connect(self._on_duration)
+        self.slider.sliderMoved.connect(self._on_slider_moved)
+
+        # Load video
+        if self.recording_id:
+            try:
+                with dbm.get_session() as s:
+                    rec = s.get(Recording, self.recording_id)
+                    if rec and rec.video_path and os.path.exists(rec.video_path):
+                        self.video_path = Path(rec.video_path)
+                        self.player.setSource(QUrl.fromLocalFile(str(self.video_path)))
+                        self.statusBar().showMessage(f"Loaded video: {rec.video_path}", 4000)
+                    else:
+                        self.statusBar().showMessage("No video found for this recording.", 4000)
+            except Exception as e:
+                self.statusBar().showMessage(f"Failed to load video: {e}", 5000)
+
+        show_fullscreen_or_center(self, True)
+        self._prompt_initial_assignment()_prompt_initial_assignment(self):
+        reply = QMessageBox.question(
+            self, "Assign Controllers",
+            "Observer mode requires at least one controller to capture input.\n\n"
+            "Would you like to assign controllers now?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+        )
+        if reply == QMessageBox.Yes:
+            self._assign()
+            if not self.assigned.get("A") and not self.assigned.get("B"):
+                QMessageBox.warning(
+                    self, "No Controllers Assigned",
+                    "At least one controller must be assigned for observer mode.\n\n"
+                    "Exiting observer mode."
+                )
+                self._allow_close = True
+                self.close()
+        else:
+            QMessageBox.information(
+                self, "Observer Mode Cancelled",
+                "Observer mode requires controller assignment.\n\n"
+                "Exiting observer mode."
+            )
+            self._allow_close = True
+            self.close()
+
+    def keyPressEvent(self, event: QKeyEvent):
+        if event.modifiers() & Qt.AltModifier and event.key() == Qt.Key_Tab:
+            event.ignore(); return
+        if event.modifiers() & Qt.AltModifier and event.key() == Qt.Key_F4:
+            event.ignore(); return
+        if (event.modifiers() & Qt.ControlModifier and
+                event.modifiers() & Qt.AltModifier and
+                event.key() == Qt.Key_Delete):
+            event.ignore(); return
+        if event.key() == Qt.Key_Escape:
+            event.ignore(); return
+        super().keyPressEvent(event)
+
+    def _exit_with_pin(self):
+        self._stop()
+        if not self._case_id:
+            self._force_close(); return
+        with dbm.get_session() as s:
+            case = s.query(dbm.Case).filter_by(id=self._case_id).first()
+            if not case:
+                self._force_close(); return
+            if getattr(case, 'is_locked', False) and getattr(case, 'security_hash', None):
+                attempts, max_attempts = 0, 3
+                while attempts < max_attempts:
+                    pin = PinDialog.get_pin_from_user(
+                        self, "Exit Observer Mode",
+                        "Enter case PIN to return to main application:"
+                    )
+                    if pin is None:
+                        log_access(self._case_id, "OBSERVER_EXIT_CANCELLED"); return
+                    if verify_pin(case.security_hash, pin):
+                        log_access(self._case_id, "OBSERVER_EXIT_GRANTED")
+                        self._force_close(); return
+                    attempts += 1
+                    remaining = max_attempts - attempts
+                    log_access(self._case_id, f"OBSERVER_EXIT_DENIED_ATTEMPT_{attempts}", success=False)
+                    QMessageBox.warning(
+                        self, "Incorrect PIN",
+                        ("Incorrect PIN." if remaining > 0 else
+                         "Maximum attempts exceeded.\nCannot exit observer mode.")
+                    )
+                    if remaining <= 0:
+                        return
+            else:
+                self._force_close()
+
+    def _force_close(self):
+        self._allow_close = True
+        self.close()
+
+    def _assign(self):
+        self.assigned = AssignControllersDialog.assign(self, "Assign Controllers")
+        a = (self.assigned.get("A") or {}).get("path") if self.assigned.get("A") else "–"
+        b = (self.assigned.get("B") or {}).get("path") if self.assigned.get("B") else "–"
+        print(f"[observer] assigned A={a}  B={b}")
+        self.statusBar().showMessage(f"Assigned A={a}  B={b}", 4000)
+
+    def _start(self):
+        if not self.recording_id:
+            QMessageBox.warning(self, "Observer", "No recording selected.\nOpen a recording first."); return
+        if not self.assigned.get("A") and not self.assigned.get("B"):
+            QMessageBox.warning(self, "No Controllers Assigned",
+                                "Please assign at least one controller before starting the observer session.")
+            return
+        if self.chk_recognition.isChecked():
+            self._start_with_recognition_check()
+        else:
+            self._start_session()
+
+    # ---- Recognition check (fully synchronous) ----
+    def _start_with_recognition_check(self):
+        print("[observer] Starting with recognition check…")
+        try:
+            self.player.pause()
+        except Exception:
+            pass
+
+        if not self.video_path or not self.video_path.exists():
+            QMessageBox.critical(self, "Video Not Found",
+                                 "Cannot perform recognition check - video file not found.")
+            return
+
+        # Extract frames
+        self.lbl_status.setText("Extracting video frames for recognition check…")
+        self.statusBar().showMessage("Extracting frames…", 2000)
+
+        frames = self._extract_frames()
+        if not frames or len(frames) < 3:
+            QMessageBox.warning(self, "Frame Extraction Failed",
+                                f"Could not extract enough frames (got {len(frames)}/3).\n"
+                                "Starting session without recognition check.")
+            self._start_session()
+            return
+
+        # Inline dialog ensures correct behavior
+        dlg = InlineRecognitionDialog(
+            frames=frames,
+            regenerate=lambda: self._extract_frames(count=3),
+            parent=self
+        )
+        dlg.exec()  # strictly modal – returns only after a decision
+
+        if dlg.passed is None:
+            # No decision; treat as cancel (do nothing)
+            self.statusBar().showMessage("Recognition check cancelled.", 2000)
+            return
+
+        # Persist result
+        self._persist_recognition_result(dlg.passed)
+
+        if dlg.passed:
+            print("[observer] Recognition check PASSED — starting session")
+            self._start_session()
+        else:
+            print("[observer] Recognition check FAILED — NOT starting session")
+            self._show_failed_state()
+
+    def _persist_recognition_result(self, passed: bool) -> None:
+        now = datetime.now(timezone.utc)
+        if not self._session_id:
+            with dbm.get_session() as s:
+                sess_id = uuid4().hex
+                s.add(ObserverSession(
+                    id=sess_id,
+                    recording_id=self.recording_id,
+                    created_utc=now,
+                    label="Observer Session",
+                    recognition_check_required=True,
+                    recognition_check_passed=passed,
+                    recognition_check_timestamp=datetime.utcnow().isoformat()
+                ))
+                s.commit()
+            self._session_id = sess_id
+        else:
+            try:
+                with dbm.get_session() as s:
+                    session = s.query(ObserverSession).filter_by(id=self._session_id).first()
+                    if session:
+                        session.recognition_check_required = True
+                        session.recognition_check_passed = passed
+                        session.recognition_check_timestamp = datetime.utcnow().isoformat()
+                        s.commit()
+            except Exception as e:
+                print(f"[observer] Failed to update session with recognition result: {e}")
+
+    def _show_failed_state(self) -> None:
+        self.lbl_status.setText(
+            "⚠️ Recognition Check Failed\n\n"
+            "A participant recognized someone in the video.\n"
+            "No video playback or data recording will occur.\n\n"
+            "Please consult with the researcher."
+        )
+        self.lbl_status.setStyleSheet("color: #d32f2f; font-size: 16px; font-weight: bold;")
+        self.btn_start.setEnabled(False)
+        self.btn_stop.setEnabled(False)
+        self.btn_assign.setEnabled(True)
+        self.chk_recognition.setEnabled(True)
+        try:
+            self.player.pause()
+        except Exception:
+            pass
+        QMessageBox.warning(
+            self, "Recognition Check Failed",
+            "A participant recognized someone in the video.\n\n"
+            "The observer session will NOT start.\n"
+            "No video playback or data recording will occur.\n\n"
+            "Options:\n"
+            "• Exit observer mode (requires PIN)\n"
+            "• Try with different participants\n"
+            "• Select a different video/case",
+            QMessageBox.Ok
+        )
+
+    # ---- Frame sampler ----
+    def _extract_frames(self, count: int = 3) -> List[QPixmap]:
+        path = str(self.video_path)
+        if not path:
+            return []
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            print("[observer] Could not open video for frame extraction:", path)
+            return []
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        frames_total = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+        duration = (frames_total / fps) if fps > 0 else 0.0
+        if duration <= 0:
+            cap.release()
+            return []
+
+        bins = np.linspace(0.0, duration, num=count + 2, dtype=float)[1:-1]
+        rng = random.Random()
+        picks_sec: List[float] = []
+        min_gap = max(0.75, duration / 40.0)
+
+        if len(self._thumb_history) > 60:
+            self._thumb_history = self._thumb_history[-30:]
+
+        for center in bins:
+            half = (duration / (count + 1)) * 0.10
+            cand = max(0.0, min(duration - 1e-3, center + rng.uniform(-half, half)))
+            for _ in range(10):
+                if all(abs(cand - h) >= min_gap for h in self._thumb_history):
+                    break
+                cand = max(0.0, min(duration - 1e-3, cand + rng.uniform(min_gap * 0.25, min_gap * 0.75)))
+            picks_sec.append(cand)
+
+        pixmaps: List[QPixmap] = []
+        for t in picks_sec:
+            frame_idx = int(round(t * fps))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, frame_idx))
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb.shape
+            bytes_per_line = ch * w
+            qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            pixmaps.append(QPixmap.fromImage(qimg.copy()))
+            self._thumb_history.append(t)
+
+        cap.release()
+        return pixmaps[:count]
+
+    # ---- Session start/stop/transport ----
+    def _start_session(self):
+        print("[observer] _start_session() called")
+
+        # If recognition was required and failed, block
+        if self.chk_recognition.isChecked() and self._session_id:
+            with dbm.get_session() as s:
+                session = s.query(ObserverSession).filter_by(id=self._session_id).first()
+                if session and session.recognition_check_passed is False:
+                    print("[observer] BLOCKED: Recognition check failed")
+                    QMessageBox.critical(
+                        self, "Session Blocked",
+                        "Cannot start session - recognition check failed.\n\n"
+                        "The participant recognized someone in the video."
+                    )
+                    return
+
+        now = datetime.now(timezone.utc)
+
+        if not self._session_id:
+            with dbm.get_session() as s:
+                sess_id = uuid4().hex
+                s.add(ObserverSession(
+                    id=sess_id,
+                    recording_id=self.recording_id,
+                    created_utc=now,
+                    label="Observer Session",
+                    recognition_check_required=self.chk_recognition.isChecked(),
+                    recognition_check_passed=None if not self.chk_recognition.isChecked() else True
+                ))
+                s.commit()
+            self._session_id = sess_id
+
+        t0 = int(self.player.position())
+        assigned_map: Dict[str, Tuple[str, str]] = {}
+        for slot in ("A", "B"):
+            slotv = self.assigned.get(slot)
+            if not slotv:
+                continue
+            realpath = slotv.get("path")
+            alias = (slotv.get("name") or f"Participant {slot}").strip() or f"Participant {slot}"
+
+            with dbm.get_session() as s:
+                st_id = uuid4().hex
+                s.add(InputStream(
+                    id=st_id,
+                    session_id=self._session_id,
+                    device_name=realpath,
+                    profile_id="gamepad.evdev.v1",
+                    created_utc=now,
+                    alias=alias,
+                    construct_mapping="{}"
+                ))
+                s.add(InputEvent(
+                    id=uuid4().hex,
+                    recording_id=self.recording_id,
+                    session_id=self._session_id,
+                    stream_id=st_id,
+                    t_ms=t0,
+                    kind="button",
+                    code="INIT",
+                    value=None,
+                    is_press=None
+                ))
+                s.commit()
+
+            assigned_map[realpath] = (st_id, alias)
+
+        if assigned_map:
+            self._poller = GamepadPoller(
+                recording_id=self.recording_id,
+                session_id=self._session_id,
+                time_source=lambda: float(self.player.position()),
+                assigned=assigned_map,
+            )
+            if hasattr(self._poller, "start"):
+                try:
+                    self._poller.start()
+                except Exception:
+                    pass
+
+        print("[observer] Starting video playback")
+        try:
+            self.player.play()
+        except Exception as e:
+            print(f"[observer] Failed to start playback: {e}")
+        self.slider.setEnabled(True)
+
+        self.btn_assign.setEnabled(False)
+        self.chk_recognition.setEnabled(False)
+        self.btn_start.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+        self.lbl_status.setText("Observing… (logging aligned to video)")
+        self.lbl_status.setStyleSheet("")
+        self.statusBar().showMessage("Observer running", 2000)
+
+    def _stop(self):
+        try:
+            self.player.pause()
+        except Exception:
+            pass
+        try:
+            if self._poller:
+                if hasattr(self._poller, "stop"):
+                    self._poller.stop()
+                if hasattr(self._poller, "join"):
+                    self._poller.join(timeout=1.0)
+        except Exception:
+            pass
+        self._poller = None
+        self.slider.setEnabled(False)
+
+        self.btn_assign.setEnabled(True)
+        self.chk_recognition.setEnabled(True)
+        self.btn_start.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self.lbl_status.setText("Stopped.")
+
+    def _on_position(self, pos: int):
+        try:
+            self.slider.blockSignals(True)
+            self.slider.setValue(pos)
+            self.lbl_pos.setText(_ms_to_clock(pos))
+        finally:
+            self.slider.blockSignals(False)
+
+    def _on_duration(self, dur: int):
+        self.slider.setRange(0, dur if dur and dur > 0 else 0)
+        self.lbl_dur.setText(_ms_to_clock(dur))
+
+    def _on_slider_moved(self, pos: int):
+        try:
+            self.player.setPosition(pos)
+        except Exception:
+            pass
+
+    def closeEvent(self, ev):
+        if self._allow_close:
+            ev.accept(); return
+        ev.ignore()
+        QMessageBox.warning(
+            self, "Observer Mode Locked",
+            "Observer mode is locked.\n\n"
+            "Use the 'Exit Observer Mode' button and enter the case PIN to exit."
+        )
