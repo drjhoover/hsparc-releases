@@ -26,6 +26,16 @@ fi
 
 echo_info "=========================================="
 echo_info "  HSPARC Installation v${VERSION}"
+
+# Clean up legacy systemd service if it exists
+if [ -f /etc/systemd/system/hsparc.service ]; then
+    echo_step "Removing legacy systemd service..."
+    systemctl stop hsparc 2>/dev/null || true
+    systemctl disable hsparc 2>/dev/null || true
+    rm -f /etc/systemd/system/hsparc.service
+    systemctl daemon-reload
+    echo_info "Legacy service removed ✓"
+fi
 echo_info "=========================================="
 echo ""
 
