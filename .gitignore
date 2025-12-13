@@ -1,3 +1,16 @@
+# Build artifacts - DO NOT COMMIT SOURCE CODE
+build/
+dist/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+venv/
+
+# Tarballs are uploaded to GitHub Releases, not tracked in repo
 *.tar.gz
-*.bin
+
+# OS
 .DS_Store
