@@ -3,7 +3,7 @@ set -euo pipefail
 # HSPARC Installation Script
 # Downloads and installs HSPARC from GitHub releases
 
-VERSION="1.0.9"
+VERSION="1.1.2"
 DOWNLOAD_URL="https://github.com/drjhoover/hsparc-releases/releases/download/v${VERSION}/hsparc-${VERSION}.tar.gz"
 INSTALL_DIR="/opt/hsparc"
 KIOSK_USER="hsparc"
@@ -86,6 +86,84 @@ cat > /etc/sudoers.d/hsparc-shutdown << 'EOFSUDO'
 hsparc ALL=(ALL) NOPASSWD: /sbin/shutdown, /sbin/reboot, /sbin/poweroff
 EOFSUDO
 chmod 0440 /etc/sudoers.d/hsparc-shutdown
+
+# Configure USB auto-mount for hsparc user
+echo_step "Configuring USB auto-mount..."
+mkdir -p /media/hsparc
+chown "$KIOSK_USER:$KIOSK_USER" /media/hsparc
+
+# Get hsparc user's UID/GID
+HSPARC_UID=$(id -u "$KIOSK_USER")
+HSPARC_GID=$(id -g "$KIOSK_USER")
+
+# Create mount script
+cat > /usr/local/bin/hsparc-usb-mount.sh << EOFMOUNT
+#!/bin/bash
+DEVICE="\$1"
+LABEL="\${2:-USB}"
+MOUNT_BASE="/media/hsparc"
+
+# Sanitize label (remove special chars)
+LABEL=\$(echo "\$LABEL" | tr -cd '[:alnum:]._-' | head -c 32)
+[ -z "\$LABEL" ] && LABEL="USB"
+
+# Create mount point
+MOUNT_POINT="\${MOUNT_BASE}/\${LABEL}"
+mkdir -p "\$MOUNT_POINT"
+
+# Get filesystem type
+FSTYPE=\$(blkid -o value -s TYPE "\$DEVICE" 2>/dev/null)
+
+# Mount based on filesystem type
+case "\$FSTYPE" in
+    vfat|exfat)
+        mount -t "\$FSTYPE" -o uid=${HSPARC_UID},gid=${HSPARC_GID},umask=0002 "\$DEVICE" "\$MOUNT_POINT"
+        ;;
+    ntfs)
+        mount -t ntfs-3g -o uid=${HSPARC_UID},gid=${HSPARC_GID},umask=0002 "\$DEVICE" "\$MOUNT_POINT"
+        ;;
+    *)
+        mount "\$DEVICE" "\$MOUNT_POINT"
+        chown ${HSPARC_UID}:${HSPARC_GID} "\$MOUNT_POINT" 2>/dev/null || true
+        ;;
+esac
+
+logger "HSPARC: Mounted \$DEVICE (\$FSTYPE) at \$MOUNT_POINT"
+EOFMOUNT
+chmod +x /usr/local/bin/hsparc-usb-mount.sh
+
+# Create unmount script
+cat > /usr/local/bin/hsparc-usb-unmount.sh << 'EOFUNMOUNT'
+#!/bin/bash
+DEVICE="$1"
+MOUNT_BASE="/media/hsparc"
+
+# Find and unmount any mounts from this device
+for mp in "$MOUNT_BASE"/*; do
+    if [ -d "$mp" ] && mountpoint -q "$mp" 2>/dev/null; then
+        umount "$mp" 2>/dev/null || umount -l "$mp" 2>/dev/null || true
+        rmdir "$mp" 2>/dev/null || true
+        logger "HSPARC: Unmounted $mp"
+    fi
+done
+EOFUNMOUNT
+chmod +x /usr/local/bin/hsparc-usb-unmount.sh
+
+# Create udev rule for USB auto-mount
+cat > /etc/udev/rules.d/99-hsparc-usb.rules << 'EOFUDEV'
+# HSPARC USB Auto-mount Rule
+# Automatically mount USB drives for hsparc user
+
+# Mount USB storage devices when inserted
+ACTION=="add", SUBSYSTEM=="block", ENV{ID_FS_USAGE}=="filesystem", ENV{ID_BUS}=="usb", RUN+="/usr/local/bin/hsparc-usb-mount.sh %E{DEVNAME} %E{ID_FS_LABEL}"
+
+# Unmount when removed
+ACTION=="remove", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", RUN+="/usr/local/bin/hsparc-usb-unmount.sh %E{DEVNAME}"
+EOFUDEV
+
+# Reload udev rules
+udevadm control --reload-rules
+udevadm trigger
 
 # Setup IceWM kiosk
 echo_step "Configuring IceWM kiosk mode..."
@@ -238,6 +316,7 @@ echo_info "Configuration applied:"
 echo_info "  ✓ IceWM keyboard shortcuts disabled"
 echo_info "  ✓ Desktop background configured"
 echo_info "  ✓ Shutdown privileges granted"
+echo_info "  ✓ USB auto-mount configured"
 echo_info "  ✓ Auto-login enabled"
 echo ""
 echo_info "Next steps:"
