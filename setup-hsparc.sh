@@ -3,7 +3,7 @@ set -euo pipefail
 # HSPARC Installation Script
 # Downloads and installs HSPARC from GitHub releases
 
-VERSION="1.1.2"
+VERSION="1.1.3"
 DOWNLOAD_URL="https://github.com/drjhoover/hsparc-releases/releases/download/v${VERSION}/hsparc-${VERSION}.tar.gz"
 INSTALL_DIR="/opt/hsparc"
 KIOSK_USER="hsparc"
@@ -48,7 +48,7 @@ apt-get install -y \
     icewm x11-xserver-utils unclutter feh \
     ffmpeg v4l-utils pulseaudio \
     sqlite3 curl wget git \
-    libevdev2 libevdev-dev
+    libevdev2 libevdev-dev libxcb-xinerama0 libxcb-cursor0 libxkbcommon-x11-0
 
 # Create user
 echo_step "Creating hsparc user..."
