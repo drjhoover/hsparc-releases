@@ -48,7 +48,7 @@ apt-get install -y \
     icewm x11-xserver-utils unclutter feh \
     ffmpeg v4l-utils pulseaudio \
     sqlite3 curl wget git \
-    libevdev2 libevdev-dev libxcb-xinerama0 libxcb-cursor0 libxkbcommon-x11-0 libxcb-xinerama0 libxcb-cursor0 libxkbcommon-x11-0
+    exfat-fuse exfatprogs libevdev2 libevdev-dev libxcb-xinerama0 libxcb-cursor0 libxkbcommon-x11-0 libxcb-xinerama0 libxcb-cursor0 libxkbcommon-x11-0
 
 # Create user
 echo_step "Creating hsparc user..."
