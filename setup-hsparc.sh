@@ -3,7 +3,7 @@ set -euo pipefail
 # HSPARC Installation Script
 # Downloads and installs HSPARC from GitHub releases
 
-VERSION="1.1.5"
+VERSION="1.1.6"
 DOWNLOAD_URL="https://github.com/drjhoover/hsparc-releases/releases/download/v${VERSION}/hsparc-${VERSION}.tar.gz"
 INSTALL_DIR="/opt/hsparc"
 KIOSK_USER="hsparc"
@@ -83,7 +83,7 @@ chown -R "$KIOSK_USER:$KIOSK_USER" "$INSTALL_DIR"
 echo_step "Configuring shutdown privileges..."
 cat > /etc/sudoers.d/hsparc-shutdown << 'EOFSUDO'
 # Allow hsparc user to shutdown/reboot without password
-hsparc ALL=(ALL) NOPASSWD: /sbin/shutdown, /sbin/reboot, /sbin/poweroff, /usr/bin/systemctl
+hsparc ALL=(ALL) NOPASSWD: /sbin/shutdown, /sbin/reboot, /sbin/poweroff, /usr/bin/systemctl, /usr/bin/sed
 EOFSUDO
 chmod 0440 /etc/sudoers.d/hsparc-shutdown
 
@@ -97,7 +97,7 @@ HSPARC_UID=$(id -u "$KIOSK_USER")
 HSPARC_GID=$(id -g "$KIOSK_USER")
 
 # Create mount script
-cat > /usr/local/bin/hsparc-usb-mount.sh << EOFMOUNT
+cat > /usr/local/bin/hsparc-usb-mount.sh, /usr/bin/sed << EOFMOUNT
 #!/bin/bash
 DEVICE="\$1"
 LABEL="\${2:-USB}"
@@ -130,7 +130,7 @@ esac
 
 logger "HSPARC: Mounted \$DEVICE (\$FSTYPE) at \$MOUNT_POINT"
 EOFMOUNT
-chmod +x /usr/local/bin/hsparc-usb-mount.sh
+chmod +x /usr/local/bin/hsparc-usb-mount.sh, /usr/bin/sed
 
 # Create unmount script
 cat > /usr/local/bin/hsparc-usb-unmount.sh << 'EOFUNMOUNT'
@@ -155,7 +155,7 @@ cat > /etc/udev/rules.d/99-hsparc-usb.rules << 'EOFUDEV'
 # Automatically mount USB drives for hsparc user
 
 # Mount USB storage devices when inserted
-ACTION=="add", SUBSYSTEM=="block", ENV{ID_FS_USAGE}=="filesystem", ENV{ID_BUS}=="usb", RUN+="/usr/local/bin/hsparc-usb-mount.sh %E{DEVNAME} %E{ID_FS_LABEL}"
+ACTION=="add", SUBSYSTEM=="block", ENV{ID_FS_USAGE}=="filesystem", ENV{ID_BUS}=="usb", RUN+="/usr/local/bin/hsparc-usb-mount.sh, /usr/bin/sed %E{DEVNAME} %E{ID_FS_LABEL}"
 
 # Unmount when removed
 ACTION=="remove", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", RUN+="/usr/local/bin/hsparc-usb-unmount.sh %E{DEVNAME}"
@@ -268,6 +268,8 @@ xset s off -dpms s noblank
 # Hide cursor after inactivity
 unclutter -idle 3 -root &
 
+# Re-enable GDM autologin (in case admin disabled it)
+sudo sed -i "s/AutomaticLoginEnable=false/AutomaticLoginEnable=true/" /etc/gdm3/custom.conf
 # Launch HSPARC in kiosk mode
 export HSPARC_KIOSK=1
 cd /opt/hsparc

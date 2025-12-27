@@ -1,0 +1,6 @@
+[console_scripts]
+pyarmor = pyarmor.cli.__main__:main
+pyarmor-7 = pyarmor.pyarmor:main_entry
+pyarmor-8 = pyarmor.pyarmor:main_entry_8
+pyarmor-auth = pyarmor.cli.docker:main
+
