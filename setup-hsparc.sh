@@ -3,7 +3,7 @@ set -euo pipefail
 # HSPARC Installation Script
 # Downloads and installs HSPARC from GitHub releases
 
-VERSION="1.1.7"
+VERSION="1.1.9"
 DOWNLOAD_URL="https://github.com/drjhoover/hsparc-releases/releases/download/v${VERSION}/hsparc-${VERSION}.tar.gz"
 INSTALL_DIR="/opt/hsparc"
 KIOSK_USER="hsparc"
@@ -97,40 +97,44 @@ HSPARC_UID=$(id -u "$KIOSK_USER")
 HSPARC_GID=$(id -g "$KIOSK_USER")
 
 # Create mount script
-cat > /usr/local/bin/hsparc-usb-mount.sh, /usr/bin/sed << EOFMOUNT
+cat > /usr/local/bin/hsparc-usb-mount.sh << 'EOFMOUNT'
 #!/bin/bash
-DEVICE="\$1"
-LABEL="\${2:-USB}"
+DEVICE="$1"
 MOUNT_BASE="/media/hsparc"
 
-# Sanitize label (remove special chars)
-LABEL=\$(echo "\$LABEL" | tr -cd '[:alnum:]._-' | head -c 32)
-[ -z "\$LABEL" ] && LABEL="USB"
+# Get label from blkid
+LABEL=$(blkid -o value -s LABEL "$DEVICE" 2>/dev/null)
+LABEL=$(echo "$LABEL" | tr -cd '[:alnum:]._-' | head -c 32)
+[ -z "$LABEL" ] && LABEL="USB"
 
-# Create mount point
-MOUNT_POINT="\${MOUNT_BASE}/\${LABEL}"
-mkdir -p "\$MOUNT_POINT"
+MOUNT_POINT="${MOUNT_BASE}/${LABEL}"
+mkdir -p "$MOUNT_POINT"
+chown hsparc:hsparc "$MOUNT_POINT"
 
 # Get filesystem type
-FSTYPE=\$(blkid -o value -s TYPE "\$DEVICE" 2>/dev/null)
+FSTYPE=$(blkid -o value -s TYPE "$DEVICE" 2>/dev/null)
 
-# Mount based on filesystem type
-case "\$FSTYPE" in
+case "$FSTYPE" in
     vfat|exfat)
-        mount -t "\$FSTYPE" -o uid=${HSPARC_UID},gid=${HSPARC_GID},umask=0002 "\$DEVICE" "\$MOUNT_POINT"
+        mount -t "$FSTYPE" -o uid=1001,gid=1001,umask=0002 "$DEVICE" "$MOUNT_POINT"
         ;;
     ntfs)
-        mount -t ntfs-3g -o uid=${HSPARC_UID},gid=${HSPARC_GID},umask=0002 "\$DEVICE" "\$MOUNT_POINT"
+        mount -t ntfs-3g -o uid=1001,gid=1001,umask=0002 "$DEVICE" "$MOUNT_POINT"
         ;;
     *)
-        mount "\$DEVICE" "\$MOUNT_POINT"
+        mount "$DEVICE" "$MOUNT_POINT"
+        chown hsparc:hsparc "$MOUNT_POINT" 2>/dev/null || true
+        ;;
+esac
+EOFMOUNT
+chmod +x /usr/local/bin/hsparc-usb-mount.sh
         chown ${HSPARC_UID}:${HSPARC_GID} "\$MOUNT_POINT" 2>/dev/null || true
         ;;
 esac
 
 logger "HSPARC: Mounted \$DEVICE (\$FSTYPE) at \$MOUNT_POINT"
 EOFMOUNT
-chmod +x /usr/local/bin/hsparc-usb-mount.sh, /usr/bin/sed
+chmod +x /usr/local/bin/hsparc-usb-mount.sh
 
 # Create unmount script
 cat > /usr/local/bin/hsparc-usb-unmount.sh << 'EOFUNMOUNT'
@@ -149,13 +153,30 @@ done
 EOFUNMOUNT
 chmod +x /usr/local/bin/hsparc-usb-unmount.sh
 
+# Disable Ubuntu automounter for USB drives
+cat > /etc/udev/rules.d/85-no-automount.rules << 'EOFNOAUTO'
+ENV{ID_BUS}=="usb", ENV{UDISKS_AUTO}="0", ENV{UDISKS_IGNORE}="1"
+EOFNOAUTO
+
+# Create systemd service for USB mounting
+cat > /etc/systemd/system/hsparc-usb-mount@.service << 'EOFSVC'
+[Unit]
+Description=Mount USB drive for HSPARC
+After=dev-%i.device
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/hsparc-usb-mount.sh /dev/%I
+RemainAfterExit=yes
+EOFSVC
+
 # Create udev rule for USB auto-mount
 cat > /etc/udev/rules.d/99-hsparc-usb.rules << 'EOFUDEV'
 # HSPARC USB Auto-mount Rule
 # Automatically mount USB drives for hsparc user
 
 # Mount USB storage devices when inserted
-ACTION=="add", SUBSYSTEM=="block", ENV{ID_FS_USAGE}=="filesystem", ENV{ID_BUS}=="usb", RUN+="/usr/local/bin/hsparc-usb-mount.sh, /usr/bin/sed %E{DEVNAME} %E{ID_FS_LABEL}"
+ACTION=="add", SUBSYSTEM=="block", ENV{ID_FS_USAGE}=="filesystem", ENV{ID_BUS}=="usb", TAG+="systemd", ENV{SYSTEMD_WANTS}="hsparc-usb-mount@%k.service"
 
 # Unmount when removed
 ACTION=="remove", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", RUN+="/usr/local/bin/hsparc-usb-unmount.sh %E{DEVNAME}"
@@ -285,6 +306,18 @@ sed -i "s/AutomaticLoginEnable=true/AutomaticLoginEnable=false/" /etc/gdm3/custo
 pkill -u hsparc
 EOFADMIN
 chmod +x /usr/local/bin/hsparc-admin-escape.sh
+
+# Make hsparc own GDM config so admin escape works without sudo
+chown hsparc:hsparc /etc/gdm3/custom.conf
+
+# Configure AccountsService for IceWM session
+mkdir -p /var/lib/AccountsService/users
+cat > /var/lib/AccountsService/users/hsparc << 'EOFACCT'
+[User]
+Session=icewm-session
+XSession=icewm-session
+SystemAccount=false
+EOFACCT
 
 # Configure GDM autologin for hsparc user
 mkdir -p /etc/gdm3
