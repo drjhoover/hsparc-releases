@@ -276,6 +276,22 @@ EOFSTARTUP
 
 chmod +x /home/$KIOSK_USER/.icewm/startup
 
+# Configure GDM autologin for hsparc user
+mkdir -p /etc/gdm3
+cat > /etc/gdm3/custom.conf << EOFGDM
+[daemon]
+AutomaticLoginEnable=true
+AutomaticLogin=$KIOSK_USER
+
+[security]
+
+[xdmcp]
+
+[chooser]
+
+[debug]
+EOFGDM
+
 # Auto-login via getty
 mkdir -p /etc/systemd/system/getty@tty1.service.d
 cat > /etc/systemd/system/getty@tty1.service.d/autologin.conf << EOFAUTOLOGIN
