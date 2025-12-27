@@ -303,6 +303,22 @@ chmod +x /usr/local/bin/hsparc-admin-escape.sh
 # Make hsparc own GDM config so admin escape works without sudo
 chown hsparc:hsparc /etc/gdm3/custom.conf
 
+# Create service to re-enable autologin on boot
+cat > /etc/systemd/system/hsparc-autologin.service << 'EOFAUTOSVC'
+[Unit]
+Description=Re-enable HSPARC autologin
+Before=gdm.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sed -i 's/AutomaticLoginEnable=false/AutomaticLoginEnable=true/' /etc/gdm3/custom.conf
+
+[Install]
+WantedBy=multi-user.target
+EOFAUTOSVC
+systemctl daemon-reload
+systemctl enable hsparc-autologin.service
+
 # Configure AccountsService for IceWM session
 mkdir -p /var/lib/AccountsService/users
 cat > /var/lib/AccountsService/users/hsparc << 'EOFACCT'
