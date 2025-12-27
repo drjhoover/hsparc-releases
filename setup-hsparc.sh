@@ -395,3 +395,33 @@ echo_info "Next steps:"
 echo_info "  1. Reboot: sudo reboot"
 echo_info "  2. System will auto-login and start HSPARC"
 echo ""
+
+# Create update script
+cat > /usr/local/bin/hsparc-update.sh << 'EOFUPDATESCRIPT'
+#!/bin/bash
+echo "Updating HSPARC..."
+curl -fsSL "https://raw.githubusercontent.com/drjhoover/hsparc-releases/main/setup-hsparc.sh?$(date +%s)" | sudo bash
+echo ""
+echo "Update complete. Press Enter to reboot..."
+read
+sudo reboot
+EOFUPDATESCRIPT
+chmod +x /usr/local/bin/hsparc-update.sh
+
+# Create desktop shortcut for admin user
+for user_home in /home/*; do
+    if [ -d "$user_home/Desktop" ] && [ "$(basename $user_home)" != "$KIOSK_USER" ]; then
+        cat > "$user_home/Desktop/Update-HSPARC.desktop" << 'EOFDESKTOP'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Update HSPARC
+Comment=Download and install latest HSPARC
+Exec=gnome-terminal -- /usr/local/bin/hsparc-update.sh
+Icon=system-software-update
+Terminal=false
+Categories=Utility;
+EOFDESKTOP
+        chmod +x "$user_home/Desktop/Update-HSPARC.desktop"
+    fi
+done
