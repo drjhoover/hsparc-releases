@@ -3,7 +3,7 @@ set -euo pipefail
 # HSPARC Installation Script
 # Downloads and installs HSPARC from GitHub releases
 
-VERSION="1.1.6"
+VERSION="1.1.7"
 DOWNLOAD_URL="https://github.com/drjhoover/hsparc-releases/releases/download/v${VERSION}/hsparc-${VERSION}.tar.gz"
 INSTALL_DIR="/opt/hsparc"
 KIOSK_USER="hsparc"
@@ -83,7 +83,7 @@ chown -R "$KIOSK_USER:$KIOSK_USER" "$INSTALL_DIR"
 echo_step "Configuring shutdown privileges..."
 cat > /etc/sudoers.d/hsparc-shutdown << 'EOFSUDO'
 # Allow hsparc user to shutdown/reboot without password
-hsparc ALL=(ALL) NOPASSWD: /sbin/shutdown, /sbin/reboot, /sbin/poweroff, /usr/bin/systemctl, /usr/bin/sed
+hsparc ALL=(ALL) NOPASSWD: /sbin/shutdown, /sbin/reboot, /sbin/poweroff, /usr/bin/systemctl, /usr/local/bin/hsparc-admin-escape.sh, /usr/bin/sed
 EOFSUDO
 chmod 0440 /etc/sudoers.d/hsparc-shutdown
 
@@ -277,6 +277,14 @@ cd /opt/hsparc
 EOFSTARTUP
 
 chmod +x /home/$KIOSK_USER/.icewm/startup
+
+# Create admin escape script for exiting kiosk mode
+cat > /usr/local/bin/hsparc-admin-escape.sh << 'EOFADMIN'
+#!/bin/bash
+sed -i "s/AutomaticLoginEnable=true/AutomaticLoginEnable=false/" /etc/gdm3/custom.conf
+pkill -u hsparc
+EOFADMIN
+chmod +x /usr/local/bin/hsparc-admin-escape.sh
 
 # Configure GDM autologin for hsparc user
 mkdir -p /etc/gdm3
