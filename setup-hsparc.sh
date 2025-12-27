@@ -128,13 +128,6 @@ case "$FSTYPE" in
 esac
 EOFMOUNT
 chmod +x /usr/local/bin/hsparc-usb-mount.sh
-        chown ${HSPARC_UID}:${HSPARC_GID} "\$MOUNT_POINT" 2>/dev/null || true
-        ;;
-esac
-
-logger "HSPARC: Mounted \$DEVICE (\$FSTYPE) at \$MOUNT_POINT"
-EOFMOUNT
-chmod +x /usr/local/bin/hsparc-usb-mount.sh
 
 # Create unmount script
 cat > /usr/local/bin/hsparc-usb-unmount.sh << 'EOFUNMOUNT'
