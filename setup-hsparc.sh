@@ -3,7 +3,7 @@ set -euo pipefail
 # HSPARC Installation Script
 # Downloads and installs HSPARC from GitHub releases
 
-VERSION="1.1.3"
+VERSION="1.1.4"
 DOWNLOAD_URL="https://github.com/drjhoover/hsparc-releases/releases/download/v${VERSION}/hsparc-${VERSION}.tar.gz"
 INSTALL_DIR="/opt/hsparc"
 KIOSK_USER="hsparc"
@@ -83,7 +83,7 @@ chown -R "$KIOSK_USER:$KIOSK_USER" "$INSTALL_DIR"
 echo_step "Configuring shutdown privileges..."
 cat > /etc/sudoers.d/hsparc-shutdown << 'EOFSUDO'
 # Allow hsparc user to shutdown/reboot without password
-hsparc ALL=(ALL) NOPASSWD: /sbin/shutdown, /sbin/reboot, /sbin/poweroff
+hsparc ALL=(ALL) NOPASSWD: /sbin/shutdown, /sbin/reboot, /sbin/poweroff, /usr/bin/systemctl
 EOFSUDO
 chmod 0440 /etc/sudoers.d/hsparc-shutdown
 
