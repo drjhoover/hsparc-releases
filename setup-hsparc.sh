@@ -160,7 +160,7 @@ After=dev-%i.device
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/hsparc-usb-mount.sh /dev/%I
-RemainAfterExit=yes
+RemainAfterExit=no
 EOFSVC
 
 # Create udev rule for USB auto-mount
