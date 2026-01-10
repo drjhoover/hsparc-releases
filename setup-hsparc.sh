@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
 # HSPARC Installation Script
 # Downloads and installs HSPARC from GitHub releases
+# 
+# Usage (public repo):
+#   curl -fsSL https://raw.githubusercontent.com/drjhoover/hsparc-releases/main/setup-hsparc.sh | sudo bash
+#
+# Usage (private repo):
+#   curl -H "Authorization: token YOUR_TOKEN" -fsSL https://raw.githubusercontent.com/drjhoover/hsparc-releases/main/setup-hsparc.sh | sudo bash -s -- YOUR_TOKEN
 
-VERSION="1.2.6"
-DOWNLOAD_URL="https://github.com/drjhoover/hsparc-releases/releases/download/v${VERSION}/hsparc-${VERSION}.tar.gz"
+VERSION="1.2.8"
+GITHUB_REPO="drjhoover/hsparc-releases"
+GITHUB_TOKEN="${1:-}"
 INSTALL_DIR="/opt/hsparc"
 KIOSK_USER="hsparc"
 
@@ -26,6 +34,9 @@ fi
 
 echo_info "=========================================="
 echo_info "  HSPARC Installation v${VERSION}"
+if [ -n "$GITHUB_TOKEN" ]; then
+    echo_info "  (Using authenticated GitHub access)"
+fi
 
 # Clean up legacy systemd service if it exists
 if [ -f /etc/systemd/system/hsparc.service ]; then
@@ -61,11 +72,25 @@ usermod -aG video,audio,input "$KIOSK_USER"
 echo_step "Downloading HSPARC v${VERSION}..."
 mkdir -p /tmp/hsparc-install
 cd /tmp/hsparc-install
-wget -q --show-progress "$DOWNLOAD_URL" -O hsparc.tar.gz
 
-# Extract to install directory
-echo_step "Installing to ${INSTALL_DIR}..."
-mkdir -p "$INSTALL_DIR"
+if [ -n "$GITHUB_TOKEN" ]; then
+    # Private repo - use GitHub API
+    ASSET_URL=$(curl -sL -H "Authorization: token $GITHUB_TOKEN" \
+        "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/v${VERSION}" | \
+        grep "browser_download_url.*tar.gz" | cut -d '"' -f 4)
+    
+    if [ -z "$ASSET_URL" ]; then
+        echo_error "Could not find release v${VERSION}"
+        exit 1
+    fi
+    
+    curl -L -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/octet-stream" \
+        -o hsparc.tar.gz "$ASSET_URL"
+else
+    # Public repo - direct download
+    DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}/hsparc-${VERSION}.tar.gz"
+    wget -q --show-progress "$DOWNLOAD_URL" -O hsparc.tar.gz
+fi
 tar -xzf hsparc.tar.gz -C "$INSTALL_DIR" --strip-components=1
 
 # Install Python dependencies
