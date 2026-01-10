@@ -91,6 +91,7 @@ else
     DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}/hsparc-${VERSION}.tar.gz"
     wget -q --show-progress "$DOWNLOAD_URL" -O hsparc.tar.gz
 fi
+mkdir -p "$INSTALL_DIR"
 tar -xzf hsparc.tar.gz -C "$INSTALL_DIR" --strip-components=1
 
 # Install Python dependencies
