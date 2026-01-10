@@ -10,7 +10,7 @@ set -euo pipefail
 # Usage (private repo):
 #   curl -H "Authorization: token YOUR_TOKEN" -fsSL https://raw.githubusercontent.com/drjhoover/hsparc-releases/main/setup-hsparc.sh | sudo bash -s -- YOUR_TOKEN
 
-VERSION="1.2.14o"
+VERSION="1.2.14"
 GITHUB_REPO="drjhoover/hsparc-releases"
 GITHUB_TOKEN="${1:-}"
 INSTALL_DIR="/opt/hsparc"
